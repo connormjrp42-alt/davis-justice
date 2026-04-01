@@ -26,6 +26,8 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "";
 const DISCORD_REDIRECT_URI =
   process.env.DISCORD_REDIRECT_URI || `${BASE_URL}/auth/discord/callback`;
+const DISCORD_OAUTH_SCOPE =
+  process.env.DISCORD_OAUTH_SCOPE || "identify guilds guilds.members.read";
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomUUID();
 const USE_SECURE_COOKIE = process.env.NODE_ENV === "production";
@@ -729,6 +731,16 @@ function clearOAuthNextCookie(res) {
   );
 }
 
+function clearDiscordOAuthSession(session) {
+  if (!session || typeof session !== "object") {
+    return;
+  }
+
+  session.discordAccessToken = null;
+  session.discordTokenType = null;
+  session.discordAccessTokenExpiresAt = null;
+}
+
 function sanitizeAuthCookieUser(input) {
   const source = input && typeof input === "object" ? input : {};
   const id = String(source.id || "").trim().slice(0, 64);
@@ -951,6 +963,9 @@ function getSession(req, res, { createIfMissing = false } = {}) {
     user: null,
     oauthState: null,
     nextPath: null,
+    discordAccessToken: null,
+    discordTokenType: null,
+    discordAccessTokenExpiresAt: null,
   };
   sessions.set(sessionId, session);
   setSessionCookie(res, sessionId);
@@ -1045,7 +1060,124 @@ async function getDiscordGuildMember(guildId, userId) {
   return pending;
 }
 
-async function resolveFactionAccess(user, ownerId, faction) {
+function getDiscordOAuthCredentialsFromSession(req, res) {
+  const { session } = getSession(req, res);
+  if (!session) {
+    return null;
+  }
+
+  const accessToken = String(session.discordAccessToken || "").trim();
+  if (!accessToken) {
+    return null;
+  }
+
+  const expiresAt = Number(session.discordAccessTokenExpiresAt || 0);
+  if (Number.isFinite(expiresAt) && expiresAt > 0 && Date.now() >= expiresAt) {
+    return null;
+  }
+
+  const tokenType = String(session.discordTokenType || "Bearer").trim() || "Bearer";
+  return { accessToken, tokenType };
+}
+
+async function fetchDiscordGuildMemberWithUserToken(guildId, oauth) {
+  if (!oauth || !oauth.accessToken || !isDiscordSnowflake(guildId)) {
+    return { available: false, isMember: false, roles: [] };
+  }
+
+  try {
+    const response = await fetch(
+      `${DISCORD_API_BASE_URL}/users/@me/guilds/${encodeURIComponent(guildId)}/member`,
+      {
+        headers: {
+          Authorization: `${oauth.tokenType} ${oauth.accessToken}`,
+          Accept: "application/json",
+        },
+      }
+    );
+
+    if (response.status === 404) {
+      return { available: true, isMember: false, roles: [] };
+    }
+
+    if (!response.ok) {
+      const details = await response.text();
+      console.error(
+        `Discord OAuth member check failed (${response.status}) for guild ${guildId}:`,
+        details
+      );
+      return { available: false, isMember: false, roles: [] };
+    }
+
+    const payload = await response.json();
+    const roles = Array.isArray(payload.roles)
+      ? payload.roles.map((roleId) => String(roleId || "").trim()).filter(Boolean)
+      : [];
+    return { available: true, isMember: true, roles };
+  } catch (error) {
+    console.error("Discord OAuth guild member request failed:", error);
+    return { available: false, isMember: false, roles: [] };
+  }
+}
+
+async function fetchDiscordGuildMembershipFromUserGuilds(guildId, oauth) {
+  if (!oauth || !oauth.accessToken || !isDiscordSnowflake(guildId)) {
+    return { available: false, isMember: false, roles: [] };
+  }
+
+  try {
+    const response = await fetch(`${DISCORD_API_BASE_URL}/users/@me/guilds`, {
+      headers: {
+        Authorization: `${oauth.tokenType} ${oauth.accessToken}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      console.error(
+        `Discord OAuth guild list check failed (${response.status}) for guild ${guildId}:`,
+        details
+      );
+      return { available: false, isMember: false, roles: [] };
+    }
+
+    const guilds = await response.json();
+    const isMember = Array.isArray(guilds)
+      ? guilds.some((guild) => String(guild?.id || "").trim() === String(guildId))
+      : false;
+    return { available: true, isMember, roles: [] };
+  } catch (error) {
+    console.error("Discord OAuth guild list request failed:", error);
+    return { available: false, isMember: false, roles: [] };
+  }
+}
+
+async function getDiscordGuildMemberForRequest(req, res, guildId, userId) {
+  const botMembership = await getDiscordGuildMember(guildId, userId);
+  if (botMembership.available) {
+    return botMembership;
+  }
+
+  const oauth = getDiscordOAuthCredentialsFromSession(req, res);
+  if (!oauth) {
+    return botMembership;
+  }
+
+  const oauthMember = await fetchDiscordGuildMemberWithUserToken(guildId, oauth);
+  if (oauthMember.available) {
+    return oauthMember;
+  }
+
+  const oauthGuildList = await fetchDiscordGuildMembershipFromUserGuilds(guildId, oauth);
+  if (oauthGuildList.available) {
+    return oauthGuildList;
+  }
+
+  return botMembership;
+}
+
+async function resolveFactionAccess(req, res, user, ownerId, faction) {
   const isOwnerLeader = Boolean(
     user && String(user.id) === String(ownerId) && isLeaderUser(user)
   );
@@ -1076,7 +1208,7 @@ async function resolveFactionAccess(user, ownerId, faction) {
     };
   }
 
-  const membership = await getDiscordGuildMember(guildId, String(user.id));
+  const membership = await getDiscordGuildMemberForRequest(req, res, guildId, String(user.id));
   if (!membership.available || !membership.isMember) {
     return {
       canView: false,
@@ -1100,14 +1232,14 @@ async function resolveFactionAccess(user, ownerId, faction) {
   };
 }
 
-async function getFactionTabsForUser(user) {
+async function getFactionTabsForUser(req, res, user) {
   if (!user || !user.id) {
     return [];
   }
 
   const checks = await Promise.all(
     Object.entries(factionState.factions).map(async ([ownerId, faction]) => {
-      const access = await resolveFactionAccess(user, ownerId, faction);
+      const access = await resolveFactionAccess(req, res, user, ownerId, faction);
       if (!access.canView) {
         return null;
       }
@@ -1396,7 +1528,7 @@ async function handleFactionNav(req, res) {
     });
   }
 
-  const tabs = await getFactionTabsForUser(user);
+  const tabs = await getFactionTabsForUser(req, res, user);
   return sendJson(res, 200, {
     authenticated: true,
     isLeader: isLeaderUser(user),
@@ -1499,7 +1631,7 @@ async function handleFactionSiteRead(req, res, rawSlug) {
     return sendJson(res, 401, { error: "Auth required" });
   }
 
-  const access = await resolveFactionAccess(user, record.ownerId, record.faction);
+  const access = await resolveFactionAccess(req, res, user, record.ownerId, record.faction);
   if (!access.canView) {
     return sendJson(res, 403, { error: "Faction access denied" });
   }
@@ -1591,7 +1723,7 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
     return;
   }
 
-  const access = await resolveFactionAccess(user, record.ownerId, record.faction);
+  const access = await resolveFactionAccess(req, res, user, record.ownerId, record.faction);
   if (!access.canView) {
     return sendJson(res, 403, { error: "Faction access denied" });
   }
@@ -1721,7 +1853,7 @@ function handleDiscordAuth(req, res, requestUrl) {
   const authUrl = new URL("https://discord.com/oauth2/authorize");
   authUrl.searchParams.set("client_id", DISCORD_CLIENT_ID);
   authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("scope", "identify");
+  authUrl.searchParams.set("scope", DISCORD_OAUTH_SCOPE);
   authUrl.searchParams.set("redirect_uri", DISCORD_REDIRECT_URI);
   authUrl.searchParams.set("state", state);
 
@@ -1736,12 +1868,14 @@ async function handleDiscordCallback(req, res, requestUrl) {
 
   if (!validateDiscordConfig()) {
     clearOAuthNextCookie(res);
+    clearDiscordOAuthSession(session);
     return redirect(res, appendAuthError(redirectPath, "config"));
   }
 
   const error = requestUrl.searchParams.get("error");
   if (error) {
     clearOAuthNextCookie(res);
+    clearDiscordOAuthSession(session);
     session.oauthState = null;
     session.nextPath = null;
     session.updatedAt = Date.now();
@@ -1754,6 +1888,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
   const stateHasValidSignature = verifySignedOAuthState(state);
   if (!code || !state || (!stateMatchesSession && !stateHasValidSignature)) {
     clearOAuthNextCookie(res);
+    clearDiscordOAuthSession(session);
     session.oauthState = null;
     session.nextPath = null;
     session.updatedAt = Date.now();
@@ -1778,6 +1913,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
     if (!tokenResponse.ok) {
       console.error("Discord token exchange failed:", await tokenResponse.text());
       clearOAuthNextCookie(res);
+      clearDiscordOAuthSession(session);
       session.oauthState = null;
       session.nextPath = null;
       session.updatedAt = Date.now();
@@ -1788,6 +1924,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
     const accessToken = tokenPayload.access_token;
     if (!accessToken) {
       clearOAuthNextCookie(res);
+      clearDiscordOAuthSession(session);
       session.oauthState = null;
       session.nextPath = null;
       session.updatedAt = Date.now();
@@ -1803,6 +1940,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
     if (!userResponse.ok) {
       console.error("Discord user fetch failed:", await userResponse.text());
       clearOAuthNextCookie(res);
+      clearDiscordOAuthSession(session);
       session.oauthState = null;
       session.nextPath = null;
       session.updatedAt = Date.now();
@@ -1814,6 +1952,11 @@ async function handleDiscordCallback(req, res, requestUrl) {
     const discriminator = userPayload.discriminator || "0";
     const displayName = userPayload.global_name || username;
     const avatarUrl = buildDiscordAvatarUrl(userPayload);
+    const tokenType = String(tokenPayload.token_type || "Bearer").trim() || "Bearer";
+    const expiresInSec = Number(tokenPayload.expires_in);
+    const safeExpiresInSec = Number.isFinite(expiresInSec)
+      ? Math.max(120, Math.min(expiresInSec, 60 * 60 * 24 * 30))
+      : 55 * 60;
 
     session.user = {
       id: userPayload.id,
@@ -1822,6 +1965,9 @@ async function handleDiscordCallback(req, res, requestUrl) {
       displayName,
       avatarUrl,
     };
+    session.discordAccessToken = accessToken;
+    session.discordTokenType = tokenType;
+    session.discordAccessTokenExpiresAt = Date.now() + safeExpiresInSec * 1000;
     setAuthUserCookie(res, session.user);
     clearOAuthNextCookie(res);
     session.oauthState = null;
@@ -1832,6 +1978,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
   } catch (error) {
     console.error("Discord callback error:", error);
     clearOAuthNextCookie(res);
+    clearDiscordOAuthSession(session);
     session.oauthState = null;
     session.nextPath = null;
     session.updatedAt = Date.now();
@@ -1945,7 +2092,7 @@ async function handleFactionSitePage(req, res, method, rawSlug) {
     return redirect(res, appendAuthError("/", "auth_required"));
   }
 
-  const access = await resolveFactionAccess(user, record.ownerId, record.faction);
+  const access = await resolveFactionAccess(req, res, user, record.ownerId, record.faction);
   if (!access.canView) {
     return redirect(res, appendAuthError("/", "forbidden"));
   }

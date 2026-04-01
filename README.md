@@ -48,6 +48,7 @@ git push -u origin main
 - `DISCORD_CLIENT_ID=<...>`
 - `DISCORD_CLIENT_SECRET=<...>`
 - `DISCORD_REDIRECT_URI=https://<your-domain>/auth/discord/callback`
+- `DISCORD_OAUTH_SCOPE=identify guilds guilds.members.read` (optional)
 - `DISCORD_BOT_TOKEN=<bot_token_for_guild_membership_checks>`
 - `DISCORD_MEMBER_CACHE_TTL_MS=90000` (optional)
 - `STATEMENTS_WEBHOOK_URL=<optional_global_discord_webhook>`
