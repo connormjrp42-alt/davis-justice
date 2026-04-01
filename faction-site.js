@@ -61,6 +61,26 @@ async function initFactionSite() {
       return;
     }
 
+    if (response.status === 401) {
+      setStatus("Требуется вход через Discord.", true);
+      return;
+    }
+
+    if (response.status === 403) {
+      const fail = await safeJson(response);
+      const reason = String(fail?.reason || "").trim();
+      if (reason === "missing_server") {
+        setStatus("Лидер фракции указал некорректный ID Discord-сервера.", true);
+      } else if (reason === "not_member") {
+        setStatus("У вас нет доступа: вы не состоите на сервере этой фракции.", true);
+      } else if (reason === "membership_check_failed") {
+        setStatus("Не удалось проверить доступ в Discord. Перелогиньтесь и попробуйте снова.", true);
+      } else {
+        setStatus("Доступ к фракции запрещён.", true);
+      }
+      return;
+    }
+
     if (!response.ok) {
       setStatus("Не удалось загрузить сайт фракции.", true);
       return;
@@ -167,6 +187,16 @@ function normalizeMedia(input) {
 function normalizeUrl(value) {
   const raw = String(value || "").trim();
   return /^https?:\/\/\S+$/i.test(raw) ? raw.slice(0, 4096) : "";
+}
+
+function normalizeDiscordIdInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return raw.replace(/\D+/g, "").slice(0, 30);
+}
+
+function isValidDiscordId(value) {
+  return /^\d{15,30}$/.test(String(value || "").trim());
 }
 
 function inferMediaType(url) {
@@ -1040,8 +1070,24 @@ function bindSettingsPaneEvents() {
 
   if (nameInput) nameInput.addEventListener("input", () => { state.draft.name = nameInput.value; });
   if (descriptionInput) descriptionInput.addEventListener("input", () => { state.draft.description = descriptionInput.value; });
-  if (serverIdInput) serverIdInput.addEventListener("input", () => { state.draft.serverId = serverIdInput.value; });
-  if (roleIdInput) roleIdInput.addEventListener("input", () => { state.draft.roleId = roleIdInput.value; });
+  if (serverIdInput) {
+    serverIdInput.addEventListener("input", () => {
+      const normalized = normalizeDiscordIdInput(serverIdInput.value);
+      state.draft.serverId = normalized;
+      if (serverIdInput.value !== normalized) {
+        serverIdInput.value = normalized;
+      }
+    });
+  }
+  if (roleIdInput) {
+    roleIdInput.addEventListener("input", () => {
+      const normalized = normalizeDiscordIdInput(roleIdInput.value);
+      state.draft.roleId = normalized;
+      if (roleIdInput.value !== normalized) {
+        roleIdInput.value = normalized;
+      }
+    });
+  }
   if (statementWebhookInput) statementWebhookInput.addEventListener("input", () => { state.draft.statementWebhookUrl = statementWebhookInput.value.trim(); });
   if (avatarUrlInput) avatarUrlInput.addEventListener("input", () => { state.draft.avatarUrl = avatarUrlInput.value.trim(); });
   if (bannerUrlInput) bannerUrlInput.addEventListener("input", () => { state.draft.bannerUrl = bannerUrlInput.value.trim(); });
@@ -1084,8 +1130,8 @@ async function saveFaction() {
   const payload = {
     name: String(state.draft.name || "").trim(),
     description: String(state.draft.description || "").trim(),
-    serverId: String(state.draft.serverId || "").trim(),
-    roleId: String(state.draft.roleId || "").trim(),
+    serverId: normalizeDiscordIdInput(state.draft.serverId),
+    roleId: normalizeDiscordIdInput(state.draft.roleId),
     statementWebhookUrl: String(state.draft.statementWebhookUrl || "").trim(),
     avatarUrl: String(state.draft.avatarUrl || "").trim(),
     bannerUrl: String(state.draft.bannerUrl || "").trim(),
@@ -1093,6 +1139,17 @@ async function saveFaction() {
     guides: state.draft.guides.map(toPayloadMaterial),
     documents: state.draft.documents.map(toPayloadDocument),
   };
+
+  if (!payload.serverId || !isValidDiscordId(payload.serverId)) {
+    setFlash("Укажите корректный ID Discord-сервера (обычно 17-20 цифр).", "error");
+    render();
+    return;
+  }
+  if (payload.roleId && !isValidDiscordId(payload.roleId)) {
+    setFlash("ID роли указан неверно. Оставьте поле пустым или укажите корректный Discord ID.", "error");
+    render();
+    return;
+  }
 
   try {
     const response = await fetch(`/api/faction/site/${encodeURIComponent(slug)}`, {

@@ -629,6 +629,41 @@ function sanitizeRevisionLog(value) {
     .slice(0, 100);
 }
 
+function normalizeDiscordIdInput(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  // Accept pasted Discord mentions/URLs and keep only numeric ID.
+  return raw.replace(/\D+/g, "").slice(0, 30);
+}
+
+function validateFactionDiscordConfig(faction) {
+  const serverId = String(faction?.serverId || "").trim();
+  const roleId = String(faction?.roleId || "").trim();
+
+  if (serverId && !isDiscordSnowflake(serverId)) {
+    return {
+      ok: false,
+      error: "Invalid faction server ID",
+      details: "Server ID must be a valid numeric Discord ID (usually 17-20 digits).",
+      field: "serverId",
+    };
+  }
+
+  if (roleId && !isDiscordSnowflake(roleId)) {
+    return {
+      ok: false,
+      error: "Invalid faction role ID",
+      details: "Role ID must be a valid numeric Discord ID (usually 17-20 digits), or empty.",
+      field: "roleId",
+    };
+  }
+
+  return { ok: true };
+}
+
 function sanitizeFactionPayload(input, ownerDiscordId, preserveMeta) {
   const source = input && typeof input === "object" ? input : {};
   const nowIso = new Date().toISOString();
@@ -651,8 +686,8 @@ function sanitizeFactionPayload(input, ownerDiscordId, preserveMeta) {
     slug: slugifyFactionName(source.slug || `faction-${String(ownerDiscordId).slice(-6)}`),
     name: toString(source.name, 120),
     description: toString(source.description, 1600),
-    serverId: toString(source.serverId, 64),
-    roleId: toString(source.roleId, 64),
+    serverId: normalizeDiscordIdInput(source.serverId),
+    roleId: normalizeDiscordIdInput(source.roleId),
     avatarUrl: toImageRef(source.avatarUrl),
     bannerUrl: toImageRef(source.bannerUrl),
     memos: sanitizeMaterialArray(source.memos, preserveMeta, "memo"),
@@ -1021,7 +1056,7 @@ function cleanupExpiredSessions() {
 }
 
 function isDiscordSnowflake(value) {
-  return /^\d{8,30}$/.test(String(value || "").trim());
+  return /^\d{15,30}$/.test(String(value || "").trim());
 }
 
 async function fetchDiscordGuildMember(guildId, userId) {
@@ -1591,11 +1626,16 @@ async function handleFactionNav(req, res) {
     });
   }
 
+  const ownFaction = factionState.factions[String(user.id)] || null;
+  const ownFactionValidation = ownFaction ? validateFactionDiscordConfig(ownFaction) : { ok: true };
   const tabs = await getFactionTabsForUser(req, res, user);
   return sendJson(res, 200, {
     authenticated: true,
     isLeader: isLeaderUser(user),
     tabs,
+    diagnostics: {
+      ownFactionConfig: ownFactionValidation,
+    },
   });
 }
 
@@ -1662,6 +1702,14 @@ async function handleUpdateMyFaction(req, res) {
       ownerId,
       true
     );
+    const configValidation = validateFactionDiscordConfig(sanitized);
+    if (!configValidation.ok) {
+      return sendJson(res, 400, {
+        error: configValidation.error,
+        details: configValidation.details,
+        field: configValidation.field,
+      });
+    }
     factionState.factions[ownerId] = {
       ...currentFaction,
       ...sanitized,
@@ -1696,7 +1744,10 @@ async function handleFactionSiteRead(req, res, rawSlug) {
 
   const access = await resolveFactionAccess(req, res, user, record.ownerId, record.faction);
   if (!access.canView) {
-    return sendJson(res, 403, { error: "Faction access denied" });
+    return sendJson(res, 403, {
+      error: "Faction access denied",
+      reason: access.matchedBy,
+    });
   }
 
   return sendJson(res, 200, {
@@ -1740,6 +1791,14 @@ async function handleFactionSiteUpdate(req, res, rawSlug) {
       record.ownerId,
       true
     );
+    const configValidation = validateFactionDiscordConfig(sanitized);
+    if (!configValidation.ok) {
+      return sendJson(res, 400, {
+        error: configValidation.error,
+        details: configValidation.details,
+        field: configValidation.field,
+      });
+    }
 
     const nowIso = new Date().toISOString();
     const revisionLog = [
@@ -1788,7 +1847,10 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
 
   const access = await resolveFactionAccess(req, res, user, record.ownerId, record.faction);
   if (!access.canView) {
-    return sendJson(res, 403, { error: "Faction access denied" });
+    return sendJson(res, 403, {
+      error: "Faction access denied",
+      reason: access.matchedBy,
+    });
   }
 
   let payload;
