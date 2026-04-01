@@ -7,7 +7,9 @@ const { URL } = require("node:url");
 const ROOT_DIR = __dirname;
 const ENV_PATH = path.join(ROOT_DIR, ".env");
 const SESSION_COOKIE_NAME = "dj_sid";
+const OAUTH_NEXT_COOKIE_NAME = "dj_next";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 loadEnvFile(ENV_PATH);
 
@@ -661,10 +663,25 @@ function parseCookies(req) {
   return result;
 }
 
+function appendSetCookie(res, cookieValue) {
+  const existing = res.getHeader("Set-Cookie");
+  if (!existing) {
+    res.setHeader("Set-Cookie", cookieValue);
+    return;
+  }
+
+  if (Array.isArray(existing)) {
+    res.setHeader("Set-Cookie", [...existing, cookieValue]);
+    return;
+  }
+
+  res.setHeader("Set-Cookie", [String(existing), cookieValue]);
+}
+
 function setSessionCookie(res, sessionId, maxAgeSec = Math.floor(SESSION_TTL_MS / 1000)) {
   const secureFlag = USE_SECURE_COOKIE ? "; Secure" : "";
-  res.setHeader(
-    "Set-Cookie",
+  appendSetCookie(
+    res,
     `${SESSION_COOKIE_NAME}=${encodeURIComponent(
       sessionId
     )}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${secureFlag}`
@@ -673,10 +690,84 @@ function setSessionCookie(res, sessionId, maxAgeSec = Math.floor(SESSION_TTL_MS 
 
 function clearSessionCookie(res) {
   const secureFlag = USE_SECURE_COOKIE ? "; Secure" : "";
-  res.setHeader(
-    "Set-Cookie",
+  appendSetCookie(
+    res,
     `${SESSION_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`
   );
+}
+
+function setOAuthNextCookie(res, nextPath, maxAgeSec = Math.floor(OAUTH_STATE_TTL_MS / 1000)) {
+  const secureFlag = USE_SECURE_COOKIE ? "; Secure" : "";
+  appendSetCookie(
+    res,
+    `${OAUTH_NEXT_COOKIE_NAME}=${encodeURIComponent(
+      nextPath
+    )}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${secureFlag}`
+  );
+}
+
+function clearOAuthNextCookie(res) {
+  const secureFlag = USE_SECURE_COOKIE ? "; Secure" : "";
+  appendSetCookie(
+    res,
+    `${OAUTH_NEXT_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`
+  );
+}
+
+function createSignedOAuthState() {
+  const nonce = crypto.randomBytes(16).toString("hex");
+  const ts = Date.now().toString(36);
+  const payload = `${nonce}.${ts}`;
+  const signature = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(`oauth:${payload}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `${payload}.${signature}`;
+}
+
+function verifySignedOAuthState(stateValue) {
+  if (!stateValue || typeof stateValue !== "string") {
+    return false;
+  }
+
+  const [nonce, ts, signature] = stateValue.split(".");
+  if (!nonce || !ts || !signature) {
+    return false;
+  }
+
+  if (!/^[a-f0-9]{32}$/i.test(nonce) || !/^[a-z0-9]+$/i.test(ts) || !/^[a-f0-9]{32}$/i.test(signature)) {
+    return false;
+  }
+
+  const payload = `${nonce}.${ts}`;
+  const expected = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(`oauth:${payload}`)
+    .digest("hex")
+    .slice(0, 32);
+
+  const providedBuffer = Buffer.from(signature, "utf-8");
+  const expectedBuffer = Buffer.from(expected, "utf-8");
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  if (!crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return false;
+  }
+
+  const issuedAt = parseInt(ts, 36);
+  if (!Number.isFinite(issuedAt)) {
+    return false;
+  }
+
+  const now = Date.now();
+  if (issuedAt > now + 60 * 1000) {
+    return false;
+  }
+
+  return now - issuedAt <= OAUTH_STATE_TTL_MS;
 }
 
 function getSession(req, res, { createIfMissing = false } = {}) {
@@ -699,6 +790,7 @@ function getSession(req, res, { createIfMissing = false } = {}) {
     updatedAt: Date.now(),
     user: null,
     oauthState: null,
+    nextPath: null,
   };
   sessions.set(sessionId, session);
   setSessionCookie(res, sessionId);
@@ -1257,17 +1349,19 @@ function validateDiscordConfig() {
 
 function handleDiscordAuth(req, res, requestUrl) {
   const requestedNext = sanitizeNextPath(requestUrl.searchParams.get("next"));
+  const redirectPath = requestedNext || "/";
 
   if (!validateDiscordConfig()) {
-    const configErrorTarget = appendAuthError(requestedNext || "/", "config");
+    const configErrorTarget = appendAuthError(redirectPath, "config");
     return redirect(res, configErrorTarget);
   }
 
   const { session } = getSession(req, res, { createIfMissing: true });
-  const state = crypto.randomBytes(24).toString("hex");
+  const state = createSignedOAuthState();
   session.oauthState = state;
-  session.nextPath = requestedNext || "/";
+  session.nextPath = redirectPath;
   session.updatedAt = Date.now();
+  setOAuthNextCookie(res, redirectPath);
 
   const authUrl = new URL("https://discord.com/oauth2/authorize");
   authUrl.searchParams.set("client_id", DISCORD_CLIENT_ID);
@@ -1280,20 +1374,34 @@ function handleDiscordAuth(req, res, requestUrl) {
 }
 
 async function handleDiscordCallback(req, res, requestUrl) {
-  const { session } = getSession(req, res);
-  if (!session) {
-    return redirect(res, appendAuthError("/", "session"));
+  const { session } = getSession(req, res, { createIfMissing: true });
+  const cookies = parseCookies(req);
+  const cookieNextPath = sanitizeNextPath(cookies[OAUTH_NEXT_COOKIE_NAME]);
+  const redirectPath = sanitizeNextPath(session.nextPath) || cookieNextPath || "/";
+
+  if (!validateDiscordConfig()) {
+    clearOAuthNextCookie(res);
+    return redirect(res, appendAuthError(redirectPath, "config"));
   }
 
   const error = requestUrl.searchParams.get("error");
-  const redirectPath = sanitizeNextPath(session.nextPath) || "/";
   if (error) {
+    clearOAuthNextCookie(res);
+    session.oauthState = null;
+    session.nextPath = null;
+    session.updatedAt = Date.now();
     return redirect(res, appendAuthError(redirectPath, "discord"));
   }
 
   const code = requestUrl.searchParams.get("code");
   const state = requestUrl.searchParams.get("state");
-  if (!code || !state || state !== session.oauthState) {
+  const stateMatchesSession = Boolean(session.oauthState && state === session.oauthState);
+  const stateHasValidSignature = verifySignedOAuthState(state);
+  if (!code || !state || (!stateMatchesSession && !stateHasValidSignature)) {
+    clearOAuthNextCookie(res);
+    session.oauthState = null;
+    session.nextPath = null;
+    session.updatedAt = Date.now();
     return redirect(res, appendAuthError(redirectPath, "state"));
   }
 
@@ -1314,12 +1422,20 @@ async function handleDiscordCallback(req, res, requestUrl) {
 
     if (!tokenResponse.ok) {
       console.error("Discord token exchange failed:", await tokenResponse.text());
+      clearOAuthNextCookie(res);
+      session.oauthState = null;
+      session.nextPath = null;
+      session.updatedAt = Date.now();
       return redirect(res, appendAuthError(redirectPath, "token"));
     }
 
     const tokenPayload = await tokenResponse.json();
     const accessToken = tokenPayload.access_token;
     if (!accessToken) {
+      clearOAuthNextCookie(res);
+      session.oauthState = null;
+      session.nextPath = null;
+      session.updatedAt = Date.now();
       return redirect(res, appendAuthError(redirectPath, "token"));
     }
 
@@ -1331,6 +1447,10 @@ async function handleDiscordCallback(req, res, requestUrl) {
 
     if (!userResponse.ok) {
       console.error("Discord user fetch failed:", await userResponse.text());
+      clearOAuthNextCookie(res);
+      session.oauthState = null;
+      session.nextPath = null;
+      session.updatedAt = Date.now();
       return redirect(res, appendAuthError(redirectPath, "user"));
     }
 
@@ -1347,12 +1467,18 @@ async function handleDiscordCallback(req, res, requestUrl) {
       displayName,
       avatarUrl,
     };
+    clearOAuthNextCookie(res);
     session.oauthState = null;
+    session.nextPath = null;
     session.updatedAt = Date.now();
 
     return redirect(res, appendAuthSuccess(redirectPath));
   } catch (error) {
     console.error("Discord callback error:", error);
+    clearOAuthNextCookie(res);
+    session.oauthState = null;
+    session.nextPath = null;
+    session.updatedAt = Date.now();
     return redirect(res, appendAuthError(redirectPath, "internal"));
   }
 }
@@ -1378,6 +1504,7 @@ function handleLogout(req, res) {
     sessions.delete(sessionId);
   }
   clearSessionCookie(res);
+  clearOAuthNextCookie(res);
   res.writeHead(204, {
     "Cache-Control": "no-store",
   });
@@ -1494,11 +1621,29 @@ function sanitizeNextPath(nextPath) {
     return null;
   }
 
-  if (!nextPath.startsWith("/") || nextPath.startsWith("//")) {
+  const trimmed = nextPath.trim();
+  if (!trimmed) {
     return null;
   }
 
-  return nextPath;
+  if (trimmed.includes("\r") || trimmed.includes("\n")) {
+    return null;
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("/auth/discord")) {
+    return null;
+  }
+
+  if (lower.startsWith("/auth/logout")) {
+    return null;
+  }
+
+  if (!trimmed.startsWith("/") || trimmed.startsWith("//")) {
+    return null;
+  }
+
+  return trimmed;
 }
 
 function appendAuthError(targetPath, code) {
