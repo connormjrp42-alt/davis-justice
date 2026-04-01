@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Davis Justice - Админ панель</title>
+    <title>Davis Justice - РђРґРјРёРЅ РїР°РЅРµР»СЊ</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -17,74 +17,65 @@
       <div class="container topbar">
         <a class="logo" href="./index.html">Davis Justice</a>
         <div class="topbar-right">
-          <a class="home-link" href="./index.html">На главную</a>
+          <a class="home-link" href="./index.html">РќР° РіР»Р°РІРЅСѓСЋ</a>
           <div class="auth-widget" data-auth-widget></div>
         </div>
       </div>
       <div class="container">
-        <nav class="department-nav" aria-label="Разделы сайта">
+                <nav class="department-nav" aria-label="Разделы сайта">
           <a href="./index.html">Обзор</a>
-          <a href="./lspd.html">LSPD</a>
-          <a href="./lscsd.html">LSCSD</a>
-          <a href="./fib.html">FIB</a>
-          <a href="./sang.html">SANG</a>
-          <a href="./ems.html">EMS</a>
-          <a href="./wn.html">WN</a>
-          <a href="./prokuratura.html">Прокуратура</a>
-          <a href="./advokatura.html">Адвокатура</a>
-          <a href="./sud.html">Суд</a>
-          <a class="active" href="./admin.html">Админ</a>
+          <a href="./my-faction.html">Моя фракция</a>
         </nav>
       </div>
     </header>
 
     <main class="page-main">
       <section class="container page-hero reveal">
-        <p class="page-kicker">Управление</p>
-        <h1>Админ Панель</h1>
+        <p class="page-kicker">РЈРїСЂР°РІР»РµРЅРёРµ</p>
+        <h1>РђРґРјРёРЅ РџР°РЅРµР»СЊ</h1>
         <p class="page-description">
-          Раздел доступен только администраторам. Сейчас тут управление
-          системным объявлением на всем сайте.
+          Р Р°Р·РґРµР» РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂР°Рј. РЎРµР№С‡Р°СЃ С‚СѓС‚ СѓРїСЂР°РІР»РµРЅРёРµ
+          СЃРёСЃС‚РµРјРЅС‹Рј РѕР±СЉСЏРІР»РµРЅРёРµРј РЅР° РІСЃРµРј СЃР°Р№С‚Рµ.
         </p>
       </section>
 
       <section class="container admin-card reveal">
-        <p class="admin-status" id="admin-status">Проверка доступа...</p>
+        <p class="admin-status" id="admin-status">РџСЂРѕРІРµСЂРєР° РґРѕСЃС‚СѓРїР°...</p>
 
         <form class="admin-form" id="settings-form" hidden>
           <div class="form-group">
             <label class="toggle-row">
               <input type="checkbox" id="announcement-enabled" />
-              Показывать объявление на всех страницах
+              РџРѕРєР°Р·С‹РІР°С‚СЊ РѕР±СЉСЏРІР»РµРЅРёРµ РЅР° РІСЃРµС… СЃС‚СЂР°РЅРёС†Р°С…
             </label>
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="announcement-title">Заголовок объявления</label>
+            <label class="form-label" for="announcement-title">Р—Р°РіРѕР»РѕРІРѕРє РѕР±СЉСЏРІР»РµРЅРёСЏ</label>
             <input
               class="field-input"
               id="announcement-title"
               type="text"
               maxlength="120"
-              placeholder="Например: Важное уведомление"
+              placeholder="РќР°РїСЂРёРјРµСЂ: Р’Р°Р¶РЅРѕРµ СѓРІРµРґРѕРјР»РµРЅРёРµ"
             />
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="announcement-text">Текст объявления</label>
+            <label class="form-label" for="announcement-text">РўРµРєСЃС‚ РѕР±СЉСЏРІР»РµРЅРёСЏ</label>
             <textarea
               class="field-textarea"
               id="announcement-text"
               maxlength="700"
-              placeholder="Введите текст объявления..."
+              placeholder="Р’РІРµРґРёС‚Рµ С‚РµРєСЃС‚ РѕР±СЉСЏРІР»РµРЅРёСЏ..."
             ></textarea>
-            <p class="form-help">До 700 символов.</p>
+            <p class="form-help">Р”Рѕ 700 СЃРёРјРІРѕР»РѕРІ.</p>
           </div>
 
           <div class="admin-actions">
-            <button class="btn btn-primary" type="submit">Сохранить</button>
+            <button class="btn btn-primary" type="submit">РЎРѕС…СЂР°РЅРёС‚СЊ</button>
             <button class="btn btn-secondary" id="reload-settings" type="button">
-              Обновить
+              РћР±РЅРѕРІРёС‚СЊ
             </button>
           </div>
 
@@ -93,39 +84,39 @@
       </section>
 
       <section class="container admin-card reveal">
-        <h2 class="section-title">Leader Доступ</h2>
+        <h2 class="section-title">Leader Р”РѕСЃС‚СѓРї</h2>
         <p class="admin-status" id="leaders-status">
-          Управление доступом к разделу "Моя фракция".
+          РЈРїСЂР°РІР»РµРЅРёРµ РґРѕСЃС‚СѓРїРѕРј Рє СЂР°Р·РґРµР»Сѓ "РњРѕСЏ С„СЂР°РєС†РёСЏ".
         </p>
 
         <form class="admin-form" id="leaders-form" hidden>
           <div class="form-group">
-            <label class="form-label" for="leader-discord-id">Discord ID участника</label>
+            <label class="form-label" for="leader-discord-id">Discord ID СѓС‡Р°СЃС‚РЅРёРєР°</label>
             <input
               class="field-input"
               id="leader-discord-id"
               type="text"
               inputmode="numeric"
-              placeholder="Например: 953290565838053466"
+              placeholder="РќР°РїСЂРёРјРµСЂ: 953290565838053466"
             />
           </div>
 
           <div class="admin-actions">
             <button class="btn btn-primary" id="grant-leader" type="button">
-              Выдать Leader
+              Р’С‹РґР°С‚СЊ Leader
             </button>
             <button class="btn btn-secondary" id="revoke-leader" type="button">
-              Снять Leader
+              РЎРЅСЏС‚СЊ Leader
             </button>
             <button class="btn btn-secondary" id="refresh-leaders" type="button">
-              Обновить список
+              РћР±РЅРѕРІРёС‚СЊ СЃРїРёСЃРѕРє
             </button>
           </div>
 
           <p class="admin-message" id="leaders-message"></p>
 
           <div class="form-group">
-            <p class="form-label">Текущие Leader ID</p>
+            <p class="form-label">РўРµРєСѓС‰РёРµ Leader ID</p>
             <div class="leaders-list" id="leaders-list"></div>
           </div>
         </form>
