@@ -8,6 +8,7 @@ const ROOT_DIR = __dirname;
 const ENV_PATH = path.join(ROOT_DIR, ".env");
 const SESSION_COOKIE_NAME = "dj_sid";
 const OAUTH_NEXT_COOKIE_NAME = "dj_next";
+const AUTH_USER_COOKIE_NAME = "dj_auth";
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
@@ -714,6 +715,134 @@ function clearOAuthNextCookie(res) {
   );
 }
 
+function sanitizeAuthCookieUser(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const id = String(source.id || "").trim().slice(0, 64);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    username: String(source.username || "").trim().slice(0, 120),
+    discriminator: String(source.discriminator || "").trim().slice(0, 16),
+    displayName: String(source.displayName || source.username || "").trim().slice(0, 160),
+    avatarUrl: String(source.avatarUrl || "").trim().slice(0, 500),
+  };
+}
+
+function createSignedAuthUserToken(user, ttlMs = SESSION_TTL_MS) {
+  const sanitized = sanitizeAuthCookieUser(user);
+  if (!sanitized) {
+    return null;
+  }
+
+  const payload = Buffer.from(JSON.stringify(sanitized), "utf-8").toString("base64url");
+  const expiresAt = (Date.now() + Math.max(60 * 1000, Number(ttlMs) || SESSION_TTL_MS)).toString(36);
+  const signedData = `${payload}.${expiresAt}`;
+  const signature = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(`auth:${signedData}`)
+    .digest("hex");
+  return `${signedData}.${signature}`;
+}
+
+function parseSignedAuthUserToken(token) {
+  if (!token || typeof token !== "string") {
+    return null;
+  }
+
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    return null;
+  }
+
+  const [payload, expiresAtRaw, signature] = parts;
+  if (!payload || !expiresAtRaw || !signature || !/^[a-f0-9]{64}$/i.test(signature)) {
+    return null;
+  }
+
+  const signedData = `${payload}.${expiresAtRaw}`;
+  const expected = crypto
+    .createHmac("sha256", SESSION_SECRET)
+    .update(`auth:${signedData}`)
+    .digest("hex");
+
+  const providedBuffer = Buffer.from(signature, "utf-8");
+  const expectedBuffer = Buffer.from(expected, "utf-8");
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return null;
+  }
+  if (!crypto.timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return null;
+  }
+
+  const expiresAt = parseInt(expiresAtRaw, 36);
+  if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) {
+    return null;
+  }
+
+  try {
+    const decoded = Buffer.from(payload, "base64url").toString("utf-8");
+    const parsed = JSON.parse(decoded);
+    return sanitizeAuthCookieUser(parsed);
+  } catch (error) {
+    return null;
+  }
+}
+
+function setAuthUserCookie(res, user, maxAgeSec = Math.floor(SESSION_TTL_MS / 1000)) {
+  const token = createSignedAuthUserToken(user, maxAgeSec * 1000);
+  if (!token) {
+    return;
+  }
+
+  const secureFlag = USE_SECURE_COOKIE ? "; Secure" : "";
+  appendSetCookie(
+    res,
+    `${AUTH_USER_COOKIE_NAME}=${encodeURIComponent(
+      token
+    )}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${maxAgeSec}${secureFlag}`
+  );
+}
+
+function clearAuthUserCookie(res) {
+  const secureFlag = USE_SECURE_COOKIE ? "; Secure" : "";
+  appendSetCookie(
+    res,
+    `${AUTH_USER_COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0${secureFlag}`
+  );
+}
+
+function getAuthUserFromCookie(req) {
+  const cookies = parseCookies(req);
+  return parseSignedAuthUserToken(cookies[AUTH_USER_COOKIE_NAME]);
+}
+
+function getAuthenticatedUser(req, res, { createSessionIfNeeded = true } = {}) {
+  let { session } = getSession(req, res);
+  if (session && session.user) {
+    return session.user;
+  }
+
+  const cookieUser = getAuthUserFromCookie(req);
+  if (!cookieUser) {
+    return null;
+  }
+
+  if (!session && createSessionIfNeeded) {
+    ({ session } = getSession(req, res, { createIfMissing: true }));
+  }
+
+  if (session) {
+    session.user = cookieUser;
+    session.updatedAt = Date.now();
+    return session.user;
+  }
+
+  return cookieUser;
+}
+
 function createSignedOAuthState() {
   const nonce = crypto.randomBytes(16).toString("hex");
   const ts = Date.now().toString(36);
@@ -822,12 +951,12 @@ function isLeaderUser(user) {
 }
 
 function getAuthorizedUser(req, res) {
-  const { session } = getSession(req, res);
-  if (!session || !session.user) {
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
     sendJson(res, 401, { error: "Auth required" });
     return null;
   }
-  return session.user;
+  return user;
 }
 
 function sendJson(res, statusCode, payload) {
@@ -849,19 +978,19 @@ function redirect(res, location) {
 }
 
 function handleMe(req, res) {
-  const { session } = getSession(req, res);
-  if (!session || !session.user) {
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
     return sendJson(res, 200, { authenticated: false });
   }
 
-  const admin = isAdminUser(session.user);
-  const leader = isLeaderUser(session.user);
+  const admin = isAdminUser(user);
+  const leader = isLeaderUser(user);
   return sendJson(res, 200, {
     authenticated: true,
     isAdmin: admin,
     isLeader: leader,
     user: {
-      ...session.user,
+      ...user,
       isAdmin: admin,
       isLeader: leader,
     },
@@ -1467,6 +1596,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
       displayName,
       avatarUrl,
     };
+    setAuthUserCookie(res, session.user);
     clearOAuthNextCookie(res);
     session.oauthState = null;
     session.nextPath = null;
@@ -1505,6 +1635,7 @@ function handleLogout(req, res) {
   }
   clearSessionCookie(res);
   clearOAuthNextCookie(res);
+  clearAuthUserCookie(res);
   res.writeHead(204, {
     "Cache-Control": "no-store",
   });
