@@ -20,9 +20,11 @@ if ("IntersectionObserver" in window) {
 }
 
 const authWidget = document.querySelector("[data-auth-widget]");
+const overviewAnnouncementCard = document.getElementById("overview-announcement");
 const pageUrl = new URL(window.location.href);
 const authError = pageUrl.searchParams.get("auth_error");
 const authSuccess = pageUrl.searchParams.get("auth");
+let publicSettingsPromise = null;
 
 ensureMyFactionNavLink();
 
@@ -39,6 +41,7 @@ if (authWidget) {
 }
 
 initAnnouncement();
+initOverviewAnnouncement();
 
 function ensureMyFactionNavLink() {
   const nav = document.querySelector(".department-nav");
@@ -186,15 +189,9 @@ async function logout() {
 
 async function initAnnouncement() {
   try {
-    const response = await fetch("/api/settings/public", {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-      },
-    });
-    if (!response.ok) return;
+    const payload = await getPublicSettings();
+    if (!payload) return;
 
-    const payload = await response.json();
     const announcement = payload && payload.announcement;
     if (!announcement || !announcement.enabled || !announcement.text) {
       return;
@@ -223,4 +220,67 @@ async function initAnnouncement() {
   } catch (error) {
     console.error("Announcement load error:", error);
   }
+}
+
+async function initOverviewAnnouncement() {
+  if (!overviewAnnouncementCard) return;
+
+  const stateElement = document.getElementById("overview-announcement-state");
+  const titleElement = document.getElementById("overview-announcement-title");
+  const textElement = document.getElementById("overview-announcement-text");
+  if (!stateElement || !titleElement || !textElement) return;
+
+  try {
+    const payload = await getPublicSettings();
+    if (!payload) {
+      stateElement.textContent = "Не удалось загрузить объявления.";
+      titleElement.textContent = "Попробуйте обновить страницу";
+      textElement.textContent =
+        "Если проблема повторяется, проверьте доступность API и настройки сервера.";
+      overviewAnnouncementCard.classList.add("is-empty");
+      return;
+    }
+
+    const announcement = payload && payload.announcement;
+    if (!announcement || !announcement.enabled || !announcement.text) {
+      stateElement.textContent = "Сейчас активных объявлений нет.";
+      titleElement.textContent = "Объявление пока не опубликовано";
+      textElement.textContent =
+        "Администратор может создать его в панели управления, после чего оно появится здесь автоматически.";
+      overviewAnnouncementCard.classList.add("is-empty");
+      return;
+    }
+
+    stateElement.textContent = "Актуальное объявление";
+    titleElement.textContent = announcement.title || "Объявление";
+    textElement.textContent = announcement.text;
+    overviewAnnouncementCard.classList.remove("is-empty");
+  } catch (error) {
+    console.error("Overview announcement load error:", error);
+    stateElement.textContent = "Ошибка загрузки.";
+    titleElement.textContent = "Не удалось получить объявление";
+    textElement.textContent = "Проверьте соединение и повторите попытку позже.";
+    overviewAnnouncementCard.classList.add("is-empty");
+  }
+}
+
+async function getPublicSettings() {
+  if (!publicSettingsPromise) {
+    publicSettingsPromise = fetch("/api/settings/public", {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    })
+      .then((response) => {
+        if (!response.ok) return null;
+        return response.json();
+      })
+      .catch((error) => {
+        console.error("Public settings load error:", error);
+        return null;
+      });
+  }
+
+  return publicSettingsPromise;
 }

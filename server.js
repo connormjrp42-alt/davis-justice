@@ -1107,7 +1107,7 @@ async function handleFactionSiteUpdate(req, res, rawSlug) {
         at: nowIso,
         editorId: String(user.id || ""),
         editorName: String(user.displayName || user.username || "Leader"),
-        action: "РћР±РЅРѕРІР»РµРЅС‹ РЅР°СЃС‚СЂРѕР№РєРё, РїР°РјСЏС‚РєРё Рё РіР°Р№РґС‹ С„СЂР°РєС†РёРё",
+        action: "Обновлены настройки, памятки и гайды фракции",
       },
       ...sanitizeRevisionLog(currentFaction.revisionLog),
     ].slice(0, 100);
@@ -1155,7 +1155,7 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
 
   try {
     const type = sanitizeStatementType(payload?.type);
-    const title = String(payload?.title || "").trim().slice(0, 180) || "Р—Р°СЏРІР»РµРЅРёРµ";
+    const title = String(payload?.title || "").trim().slice(0, 180) || "Заявление";
     const text = String(payload?.text || "").trim().slice(0, 3500);
 
     if (text.length < 10) {
@@ -1177,11 +1177,11 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
     }
 
     const statementTypeLabelMap = {
-      complaint: "Р–Р°Р»РѕР±Р°",
-      report: "Р Р°РїРѕСЂС‚",
-      request: "Р—Р°РїСЂРѕСЃ",
-      appeal: "РђРїРµР»Р»СЏС†РёСЏ",
-      other: "Р”СЂСѓРіРѕРµ",
+      complaint: "Жалоба",
+      report: "Рапорт",
+      request: "Запрос",
+      appeal: "Апелляция",
+      other: "Другое",
     };
 
     const embed = {
@@ -1190,17 +1190,17 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
       color: 11184810,
       fields: [
         {
-          name: "Р¤СЂР°РєС†РёСЏ",
+          name: "Фракция",
           value: String(faction?.name || "Unknown faction").slice(0, 1024),
           inline: true,
         },
         {
-          name: "РўРёРї",
-          value: statementTypeLabelMap[type] || "Р”СЂСѓРіРѕРµ",
+          name: "Тип",
+          value: statementTypeLabelMap[type] || "Другое",
           inline: true,
         },
         {
-          name: "РђРІС‚РѕСЂ",
+          name: "Автор",
           value: String(user.displayName || user.username || "Unknown user").slice(0, 1024),
           inline: true,
         },
@@ -1212,7 +1212,7 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
       ],
       timestamp: new Date().toISOString(),
       footer: {
-        text: "Davis Justice вЂў Р—Р°СЏРІР»РµРЅРёРµ СЃ СЃР°Р№С‚Р° С„СЂР°РєС†РёРё",
+        text: "Davis Justice • Заявление с сайта фракции",
       },
     };
 

@@ -388,6 +388,37 @@ h1 {
   text-transform: uppercase;
 }
 
+.overview-announcement-card {
+  margin-top: 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke-soft);
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.overview-announcement-state {
+  margin: 0;
+  font-size: 0.76rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #f3e3a2;
+}
+
+.overview-announcement-title {
+  margin: 0.55rem 0 0.4rem;
+  font-size: 1.18rem;
+}
+
+.overview-announcement-text {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.overview-announcement-card.is-empty .overview-announcement-state {
+  color: #ffd3a5;
+}
+
 .admin-card {
   margin-top: 1.2rem;
   background: var(--bg-elevated);

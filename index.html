@@ -16,10 +16,13 @@
     <header class="site-header">
       <div class="container topbar">
         <a class="logo" href="./index.html">Davis Justice</a>
-        <div class="topbar-right"><a class="home-link" href="./index.html">Р“Р»Р°РІРЅР°СЏ</a><div class="auth-widget" data-auth-widget></div></div>
+        <div class="topbar-right">
+          <a class="home-link" href="./index.html">Главная</a>
+          <div class="auth-widget" data-auth-widget></div>
+        </div>
       </div>
       <div class="container">
-                <nav class="department-nav" aria-label="Разделы сайта">
+        <nav class="department-nav" aria-label="Разделы сайта">
           <a class="active" href="./index.html">Обзор</a>
           <a href="./my-faction.html">Моя фракция</a>
         </nav>
@@ -31,43 +34,106 @@
         <p class="hero-kicker">Majestic GTA 5</p>
         <h1>Davis Justice</h1>
         <p class="hero-description">
-          РџРѕСЂС‚Р°Р» СЃ РїР°РјСЏС‚РєР°РјРё Рё РіР°Р№РґР°РјРё РґР»СЏ РіРѕСЃСѓРґР°СЂСЃС‚РІРµРЅРЅС‹С… СЃРѕС‚СЂСѓРґРЅРёРєРѕРІ. Р Р°Р·РґРµР»С‹
-          РІС‹РЅРµСЃРµРЅС‹ РІ РІРµСЂС…РЅРµРµ РјРµРЅСЋ Рё СѓР¶Рµ СЂР°Р±РѕС‚Р°СЋС‚ РєР°Рє РѕС‚РґРµР»СЊРЅС‹Рµ СЃС‚СЂР°РЅРёС†С‹.
+          Davis Justice это единый рабочий портал для государственных фракций. Сейчас в проекте
+          уже доступны вход через Discord, личный раздел лидера с конструктором фракции,
+          публичная страница фракции для сотрудников и централизованные объявления администрации.
         </p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="./lspd.html">РџРµСЂРµР№С‚Рё Рє СЂР°Р·РґРµР»Р°Рј</a>
-          <a class="btn btn-secondary" href="./sud.html">РћС‚РєСЂС‹С‚СЊ СЃСѓРґРµР±РЅС‹Р№ Р±Р»РѕРє</a>
+          <a class="btn btn-primary" href="./my-faction.html">Открыть «Моя фракция»</a>
+          <a class="btn btn-secondary" href="/auth/discord">Войти через Discord</a>
         </div>
       </section>
 
       <section class="container reveal">
-        <h2 class="section-title">РЎС‚СЂСѓРєС‚СѓСЂР° РџРѕСЂС‚Р°Р»Р°</h2>
+        <h2 class="section-title">Текущий функционал</h2>
         <div class="content-grid">
           <article class="content-card">
-            <h3>Р’РµСЂС…РЅСЏСЏ РЅР°РІРёРіР°С†РёСЏ</h3>
+            <h3>Авторизация и роли</h3>
             <p>
-              Р’СЃРµ РєР»СЋС‡РµРІС‹Рµ СЂР°Р·РґРµР»С‹ РЅР°С…РѕРґСЏС‚СЃСЏ СЃРІРµСЂС…Сѓ СЃР°Р№С‚Р° Рё РґРѕСЃС‚СѓРїРЅС‹ СЃ Р»СЋР±РѕР№
-              СЃС‚СЂР°РЅРёС†С‹.
+              Сайт поддерживает OAuth через Discord. После входа пользователь автоматически
+              получает свой уровень доступа, а интерфейс подстраивается под роль.
             </p>
           </article>
           <article class="content-card">
-            <h3>РћС‚РґРµР»СЊРЅС‹Рµ СЃС‚СЂР°РЅРёС†С‹</h3>
+            <h3>Моя фракция</h3>
             <p>
-              Р”Р»СЏ РєР°Р¶РґРѕР№ СЃС‚СЂСѓРєС‚СѓСЂС‹ СЃРґРµР»Р°РЅР° РѕС‚РґРµР»СЊРЅР°СЏ СЃС‚СЂР°РЅРёС†Р° СЃ Р±Р°Р·РѕРІС‹РјРё
-              Р±Р»РѕРєР°РјРё РїРѕРґ РґР°Р»СЊРЅРµР№С€РµРµ РЅР°РїРѕР»РЅРµРЅРёРµ.
+              Лидер может создать и редактировать собственную страницу фракции: базовую информацию,
+              баннеры, материалы, документы и структуру разделов.
             </p>
           </article>
           <article class="content-card">
-            <h3>Р•РґРёРЅС‹Р№ С‡С‘СЂРЅС‹Р№ СЃС‚РёР»СЊ</h3>
+            <h3>Публичная страница</h3>
             <p>
-              Р’РµСЃСЊ РёРЅС‚РµСЂС„РµР№СЃ РІС‹РґРµСЂР¶Р°РЅ РІ С‡С‘СЂРЅРѕР№ С‚РµРјРµ: С„РѕРЅ, РєР°СЂС‚РѕС‡РєРё, С€Р°РїРєР° Рё
-              Р°РєС†РµРЅС‚С‹.
+              Для каждой фракции формируется отдельная публичная страница, где сотрудники видят
+              актуальные материалы и инструкции в удобном формате.
+            </p>
+          </article>
+          <article class="content-card">
+            <h3>Админ-панель</h3>
+            <p>
+              Администратор управляет списком лидеров, глобальными настройками и контентом,
+              который должен быть доступен всем пользователям портала.
+            </p>
+          </article>
+          <article class="content-card">
+            <h3>Объявления сайта</h3>
+            <p>
+              Объявления задаются в админке и публикуются на портале. Активное объявление
+              показывается в верхней части сайта и в блоке обзора ниже.
+            </p>
+          </article>
+          <article class="content-card">
+            <h3>Заявления и webhook</h3>
+            <p>
+              Встроена отправка заявлений через формы фракций с возможностью отправки в Discord
+              webhook, чтобы оперативно обрабатывать обращения.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="container reveal">
+        <h2 class="section-title">Объявления сайта</h2>
+        <article class="overview-announcement-card" id="overview-announcement">
+          <p class="overview-announcement-state" id="overview-announcement-state">
+            Загружаем текущее объявление...
+          </p>
+          <h3 class="overview-announcement-title" id="overview-announcement-title">
+            Объявление администрации
+          </h3>
+          <p class="overview-announcement-text" id="overview-announcement-text">
+            Данные из раздела настроек будут показаны здесь автоматически.
+          </p>
+        </article>
+      </section>
+
+      <section class="container reveal">
+        <h2 class="section-title">Как использовать портал</h2>
+        <div class="content-grid">
+          <article class="content-card">
+            <h3>1. Войдите в аккаунт</h3>
+            <p>
+              Используйте кнопку «Войти через Discord», чтобы открыть персональные функции
+              и синхронизировать доступы по вашему Discord ID.
+            </p>
+          </article>
+          <article class="content-card">
+            <h3>2. Заполните фракцию</h3>
+            <p>
+              В разделе «Моя фракция» добавьте описание, визуал и материалы. После сохранения
+              изменения сразу становятся доступными на странице фракции.
+            </p>
+          </article>
+          <article class="content-card">
+            <h3>3. Следите за объявлениями</h3>
+            <p>
+              Проверяйте объявления на этой странице перед сменой: они содержат важные обновления,
+              организационные изменения и распоряжения администрации.
             </p>
           </article>
         </div>
       </section>
     </main>
-<script src="./script.js"></script>
+    <script src="./script.js"></script>
   </body>
 </html>
-
