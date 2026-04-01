@@ -731,13 +731,30 @@ function sanitizeAuthCookieUser(input) {
   };
 }
 
+function toBase64Url(text) {
+  return Buffer.from(String(text || ""), "utf-8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function fromBase64Url(input) {
+  const normalized = String(input || "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? 0 : 4 - (normalized.length % 4);
+  const padded = normalized + "=".repeat(padding);
+  return Buffer.from(padded, "base64").toString("utf-8");
+}
+
 function createSignedAuthUserToken(user, ttlMs = SESSION_TTL_MS) {
   const sanitized = sanitizeAuthCookieUser(user);
   if (!sanitized) {
     return null;
   }
 
-  const payload = Buffer.from(JSON.stringify(sanitized), "utf-8").toString("base64url");
+  const payload = toBase64Url(JSON.stringify(sanitized));
   const expiresAt = (Date.now() + Math.max(60 * 1000, Number(ttlMs) || SESSION_TTL_MS)).toString(36);
   const signedData = `${payload}.${expiresAt}`;
   const signature = crypto
@@ -783,7 +800,7 @@ function parseSignedAuthUserToken(token) {
   }
 
   try {
-    const decoded = Buffer.from(payload, "base64url").toString("utf-8");
+    const decoded = fromBase64Url(payload);
     const parsed = JSON.parse(decoded);
     return sanitizeAuthCookieUser(parsed);
   } catch (error) {
