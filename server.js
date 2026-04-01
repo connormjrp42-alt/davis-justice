@@ -131,11 +131,14 @@ const server = http.createServer(async (req, res) => {
       return handleAdminSettingsUpdate(req, res);
     }
 
-    if (pathname === "/auth/discord" && req.method === "GET") {
+    if ((pathname === "/auth/discord" || pathname === "/auth/discord/") && req.method === "GET") {
       return handleDiscordAuth(req, res, requestUrl);
     }
 
-    if (pathname === "/auth/discord/callback" && req.method === "GET") {
+    if (
+      (pathname === "/auth/discord/callback" || pathname === "/auth/discord/callback/") &&
+      req.method === "GET"
+    ) {
       return handleDiscordCallback(req, res, requestUrl);
     }
 
