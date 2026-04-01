@@ -26,8 +26,8 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "";
 const DISCORD_REDIRECT_URI =
   process.env.DISCORD_REDIRECT_URI || `${BASE_URL}/auth/discord/callback`;
-const DISCORD_OAUTH_SCOPE =
-  process.env.DISCORD_OAUTH_SCOPE || "identify guilds guilds.members.read";
+const REQUIRED_DISCORD_OAUTH_SCOPES = ["identify", "guilds", "guilds.members.read"];
+const DISCORD_OAUTH_SCOPE = buildDiscordOAuthScope(process.env.DISCORD_OAUTH_SCOPE || "");
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomUUID();
 const USE_SECURE_COOKIE = process.env.NODE_ENV === "production";
@@ -225,6 +225,24 @@ function loadEnvFile(filePath) {
       process.env[key] = value;
     }
   }
+}
+
+function buildDiscordOAuthScope(rawScope) {
+  const extras = String(rawScope || "")
+    .split(/\s+/)
+    .map((scope) => scope.trim())
+    .filter(Boolean);
+
+  const uniqueExtras = extras.filter((scope, index) => extras.indexOf(scope) === index);
+  const required = REQUIRED_DISCORD_OAUTH_SCOPES.slice();
+  const merged = [...required];
+  uniqueExtras.forEach((scope) => {
+    if (!merged.includes(scope)) {
+      merged.push(scope);
+    }
+  });
+
+  return merged.join(" ");
 }
 
 function loadSettings() {
@@ -741,6 +759,25 @@ function clearDiscordOAuthSession(session) {
   session.discordAccessTokenExpiresAt = null;
 }
 
+function sanitizeGuildIdList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const guildIds = [];
+  value.forEach((entry) => {
+    const guildId = String(entry || "").trim();
+    if (!isDiscordSnowflake(guildId) || seen.has(guildId)) {
+      return;
+    }
+    seen.add(guildId);
+    guildIds.push(guildId);
+  });
+
+  return guildIds.slice(0, 500);
+}
+
 function sanitizeAuthCookieUser(input) {
   const source = input && typeof input === "object" ? input : {};
   const id = String(source.id || "").trim().slice(0, 64);
@@ -754,6 +791,7 @@ function sanitizeAuthCookieUser(input) {
     discriminator: String(source.discriminator || "").trim().slice(0, 16),
     displayName: String(source.displayName || source.username || "").trim().slice(0, 160),
     avatarUrl: String(source.avatarUrl || "").trim().slice(0, 500),
+    guildIds: sanitizeGuildIdList(source.guildIds),
   };
 }
 
@@ -1120,9 +1158,9 @@ async function fetchDiscordGuildMemberWithUserToken(guildId, oauth) {
   }
 }
 
-async function fetchDiscordGuildMembershipFromUserGuilds(guildId, oauth) {
-  if (!oauth || !oauth.accessToken || !isDiscordSnowflake(guildId)) {
-    return { available: false, isMember: false, roles: [] };
+async function fetchDiscordUserGuildIds(oauth) {
+  if (!oauth || !oauth.accessToken) {
+    return { available: false, guildIds: [] };
   }
 
   try {
@@ -1135,22 +1173,36 @@ async function fetchDiscordGuildMembershipFromUserGuilds(guildId, oauth) {
 
     if (!response.ok) {
       const details = await response.text();
-      console.error(
-        `Discord OAuth guild list check failed (${response.status}) for guild ${guildId}:`,
-        details
-      );
-      return { available: false, isMember: false, roles: [] };
+      console.error(`Discord OAuth guild list check failed (${response.status}):`, details);
+      return { available: false, guildIds: [] };
     }
 
-    const guilds = await response.json();
-    const isMember = Array.isArray(guilds)
-      ? guilds.some((guild) => String(guild?.id || "").trim() === String(guildId))
-      : false;
-    return { available: true, isMember, roles: [] };
+    const payload = await response.json();
+    const guildIds = Array.isArray(payload)
+      ? sanitizeGuildIdList(payload.map((guild) => guild?.id))
+      : [];
+    return { available: true, guildIds };
   } catch (error) {
     console.error("Discord OAuth guild list request failed:", error);
+    return { available: false, guildIds: [] };
+  }
+}
+
+async function fetchDiscordGuildMembershipFromUserGuilds(guildId, oauth) {
+  if (!oauth || !oauth.accessToken || !isDiscordSnowflake(guildId)) {
     return { available: false, isMember: false, roles: [] };
   }
+
+  const guildList = await fetchDiscordUserGuildIds(oauth);
+  if (!guildList.available) {
+    return { available: false, isMember: false, roles: [] };
+  }
+
+  return {
+    available: true,
+    isMember: guildList.guildIds.includes(String(guildId)),
+    roles: [],
+  };
 }
 
 async function getDiscordGuildMemberForRequest(req, res, guildId, userId) {
@@ -1209,6 +1261,17 @@ async function resolveFactionAccess(req, res, user, ownerId, faction) {
   }
 
   const membership = await getDiscordGuildMemberForRequest(req, res, guildId, String(user.id));
+  if (!membership.available) {
+    const cachedGuildIds = sanitizeGuildIdList(user.guildIds);
+    if (cachedGuildIds.includes(guildId)) {
+      return {
+        canView: true,
+        canEdit: false,
+        matchedBy: "guild_cache",
+      };
+    }
+  }
+
   if (!membership.available || !membership.isMember) {
     return {
       canView: false,
@@ -1922,6 +1985,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
 
     const tokenPayload = await tokenResponse.json();
     const accessToken = tokenPayload.access_token;
+    const tokenType = String(tokenPayload.token_type || "Bearer").trim() || "Bearer";
     if (!accessToken) {
       clearOAuthNextCookie(res);
       clearDiscordOAuthSession(session);
@@ -1933,7 +1997,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
 
     const userResponse = await fetch("https://discord.com/api/users/@me", {
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `${tokenType} ${accessToken}`,
       },
     });
 
@@ -1952,7 +2016,9 @@ async function handleDiscordCallback(req, res, requestUrl) {
     const discriminator = userPayload.discriminator || "0";
     const displayName = userPayload.global_name || username;
     const avatarUrl = buildDiscordAvatarUrl(userPayload);
-    const tokenType = String(tokenPayload.token_type || "Bearer").trim() || "Bearer";
+    const oauthContext = { accessToken, tokenType };
+    const guildList = await fetchDiscordUserGuildIds(oauthContext);
+    const guildIds = guildList.available ? guildList.guildIds : [];
     const expiresInSec = Number(tokenPayload.expires_in);
     const safeExpiresInSec = Number.isFinite(expiresInSec)
       ? Math.max(120, Math.min(expiresInSec, 60 * 60 * 24 * 30))
@@ -1964,6 +2030,7 @@ async function handleDiscordCallback(req, res, requestUrl) {
       discriminator,
       displayName,
       avatarUrl,
+      guildIds,
     };
     session.discordAccessToken = accessToken;
     session.discordTokenType = tokenType;
