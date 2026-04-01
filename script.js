@@ -21,12 +21,13 @@ if ("IntersectionObserver" in window) {
 
 const authWidget = document.querySelector("[data-auth-widget]");
 const overviewAnnouncementCard = document.getElementById("overview-announcement");
+const departmentNav = document.querySelector(".department-nav");
 const pageUrl = new URL(window.location.href);
 const authError = pageUrl.searchParams.get("auth_error");
 const authSuccess = pageUrl.searchParams.get("auth");
 let publicSettingsPromise = null;
 
-ensureMyFactionNavLink();
+initDynamicNav();
 
 if (authError || authSuccess) {
   pageUrl.searchParams.delete("auth_error");
@@ -43,26 +44,112 @@ if (authWidget) {
 initAnnouncement();
 initOverviewAnnouncement();
 
-function ensureMyFactionNavLink() {
-  const nav = document.querySelector(".department-nav");
-  if (!nav) return;
+async function initDynamicNav() {
+  if (!departmentNav) return;
 
-  let link = Array.from(nav.querySelectorAll("a")).find((anchor) => {
-    const href = anchor.getAttribute("href") || "";
-    return href.includes("my-faction.html");
-  });
+  renderDynamicNav({ authenticated: false, isLeader: false, tabs: [] });
+  try {
+    const response = await fetch("/api/faction/nav", {
+      method: "GET",
+      credentials: "include",
+      headers: {
+        Accept: "application/json",
+      },
+    });
 
-  if (!link) {
-    link = document.createElement("a");
-    link.href = "/my-faction.html";
-    link.textContent = "Моя фракция";
-    nav.appendChild(link);
+    if (!response.ok) {
+      return;
+    }
+
+    const payload = await response.json();
+    renderDynamicNav(payload);
+  } catch (error) {
+    console.error("Dynamic nav load error:", error);
+  }
+}
+
+function normalizePath(pathname) {
+  const path = String(pathname || "").trim().toLowerCase();
+  if (!path || path === "/") return "/";
+  return path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
+function isOverviewPath(pathname) {
+  const normalized = normalizePath(pathname);
+  return normalized === "/" || normalized === "/index.html";
+}
+
+function buildNavLink(href, text, isActive = false) {
+  const link = document.createElement("a");
+  link.href = href;
+  link.textContent = text;
+  if (isActive) {
+    link.classList.add("active");
+  }
+  return link;
+}
+
+function buildFactionNavLink(tab, currentPath) {
+  const siteUrl = String(tab?.siteUrl || "").trim();
+  if (!siteUrl || !siteUrl.startsWith("/factions/")) {
+    return null;
   }
 
-  const isMyFactionPage = window.location.pathname.toLowerCase().endsWith("/my-faction.html");
-  if (isMyFactionPage) {
-    nav.querySelectorAll("a").forEach((anchor) => anchor.classList.remove("active"));
+  const link = document.createElement("a");
+  link.href = siteUrl;
+  link.className = "department-nav-faction-link";
+
+  if (normalizePath(siteUrl) === currentPath) {
     link.classList.add("active");
+  }
+
+  const avatarWrap = document.createElement("span");
+  avatarWrap.className = "department-nav-avatar";
+
+  if (tab.avatarUrl) {
+    const image = document.createElement("img");
+    image.src = tab.avatarUrl;
+    image.alt = `${tab.name || "Фракция"} avatar`;
+    avatarWrap.appendChild(image);
+  } else {
+    const title = String(tab.name || "Ф").trim();
+    avatarWrap.textContent = title[0] ? title[0].toUpperCase() : "Ф";
+  }
+
+  const textNode = document.createElement("span");
+  textNode.textContent = String(tab.name || "Фракция");
+  link.append(avatarWrap, textNode);
+  return link;
+}
+
+function renderDynamicNav(payload) {
+  if (!departmentNav) return;
+
+  const currentPath = normalizePath(window.location.pathname);
+  const tabs = Array.isArray(payload?.tabs) ? payload.tabs : [];
+  const isLeader = Boolean(payload?.authenticated && payload?.isLeader);
+
+  departmentNav.innerHTML = "";
+  departmentNav.appendChild(buildNavLink("/index.html", "Обзор", isOverviewPath(currentPath)));
+
+  const seenUrls = new Set();
+  tabs.forEach((tab) => {
+    const key = String(tab?.siteUrl || "").trim();
+    if (!key || seenUrls.has(key)) {
+      return;
+    }
+    seenUrls.add(key);
+
+    const link = buildFactionNavLink(tab, currentPath);
+    if (link) {
+      departmentNav.appendChild(link);
+    }
+  });
+
+  if (isLeader) {
+    departmentNav.appendChild(
+      buildNavLink("/my-faction.html", "Моя фракция", currentPath === "/my-faction.html")
+    );
   }
 }
 
@@ -101,7 +188,7 @@ function mapAuthError(code) {
 
   const errors = {
     auth_required: "Сначала войдите через Discord.",
-    forbidden: "Доступ к админ-панели только для администраторов.",
+    forbidden: "У вас нет доступа к этому разделу.",
     config: "OAuth Discord не настроен на сервере.",
     state: "Сессия входа устарела, попробуйте ещё раз.",
     discord: "Discord отклонил авторизацию.",

@@ -48,7 +48,11 @@ git push -u origin main
 - `DISCORD_CLIENT_ID=<...>`
 - `DISCORD_CLIENT_SECRET=<...>`
 - `DISCORD_REDIRECT_URI=https://<your-domain>/auth/discord/callback`
+- `DISCORD_BOT_TOKEN=<bot_token_for_guild_membership_checks>`
+- `DISCORD_MEMBER_CACHE_TTL_MS=90000` (optional)
 - `STATEMENTS_WEBHOOK_URL=<optional_global_discord_webhook>`
+
+Важно: Discord-бот должен быть добавлен на серверы фракций. Для проверки доступа по серверу/ролям у бота должен быть доступ к получению участников сервера (Server Members Intent).
 
 ### Webhook for statements
 

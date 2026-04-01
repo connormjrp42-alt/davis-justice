@@ -26,8 +26,11 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || "";
 const DISCORD_CLIENT_SECRET = process.env.DISCORD_CLIENT_SECRET || "";
 const DISCORD_REDIRECT_URI =
   process.env.DISCORD_REDIRECT_URI || `${BASE_URL}/auth/discord/callback`;
+const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN || "";
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomUUID();
 const USE_SECURE_COOKIE = process.env.NODE_ENV === "production";
+const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
+const DISCORD_MEMBER_CACHE_TTL_MS = Number(process.env.DISCORD_MEMBER_CACHE_TTL_MS || 90_000);
 const ADMIN_DISCORD_IDS = (process.env.ADMIN_DISCORD_IDS || "953290565838053466")
   .split(",")
   .map((id) => id.trim())
@@ -62,6 +65,8 @@ const DEFAULT_FACTION_STATE = {
 };
 
 const sessions = new Map();
+const discordMemberCache = new Map();
+const discordMemberPending = new Map();
 let siteSettings = loadSettings();
 let factionState = loadFactionState();
 
@@ -99,7 +104,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (factionApiMatch && req.method === "GET") {
-      return handleFactionSiteRead(req, res, decodeURIComponent(factionApiMatch[1]));
+      return await handleFactionSiteRead(req, res, decodeURIComponent(factionApiMatch[1]));
     }
 
     if (factionApiMatch && req.method === "PUT") {
@@ -153,6 +158,10 @@ const server = http.createServer(async (req, res) => {
       return handleMyFaction(req, res);
     }
 
+    if (pathname === "/api/faction/nav" && req.method === "GET") {
+      return await handleFactionNav(req, res);
+    }
+
     if (pathname === "/api/faction/me/create" && req.method === "POST") {
       return handleCreateMyFaction(req, res);
     }
@@ -166,7 +175,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (factionPageMatch && (req.method === "GET" || req.method === "HEAD")) {
-      return handleFactionSitePage(req, res, req.method, decodeURIComponent(factionPageMatch[1]));
+      return await handleFactionSitePage(
+        req,
+        res,
+        req.method,
+        decodeURIComponent(factionPageMatch[1])
+      );
     }
 
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -953,6 +967,174 @@ function cleanupExpiredSessions() {
   }
 }
 
+function isDiscordSnowflake(value) {
+  return /^\d{8,30}$/.test(String(value || "").trim());
+}
+
+async function fetchDiscordGuildMember(guildId, userId) {
+  if (!DISCORD_BOT_TOKEN) {
+    return { available: false, isMember: false, roles: [] };
+  }
+
+  if (!isDiscordSnowflake(guildId) || !isDiscordSnowflake(userId)) {
+    return { available: false, isMember: false, roles: [] };
+  }
+
+  try {
+    const response = await fetch(
+      `${DISCORD_API_BASE_URL}/guilds/${encodeURIComponent(guildId)}/members/${encodeURIComponent(
+        userId
+      )}`,
+      {
+        headers: {
+          Authorization: `Bot ${DISCORD_BOT_TOKEN}`,
+          Accept: "application/json",
+        },
+      }
+    );
+
+    if (response.status === 404) {
+      return { available: true, isMember: false, roles: [] };
+    }
+
+    if (!response.ok) {
+      const details = await response.text();
+      console.error(
+        `Discord guild member check failed (${response.status}) for guild ${guildId}:`,
+        details
+      );
+      return { available: false, isMember: false, roles: [] };
+    }
+
+    const payload = await response.json();
+    const roles = Array.isArray(payload.roles)
+      ? payload.roles.map((roleId) => String(roleId || "").trim()).filter(Boolean)
+      : [];
+    return { available: true, isMember: true, roles };
+  } catch (error) {
+    console.error("Discord guild member request failed:", error);
+    return { available: false, isMember: false, roles: [] };
+  }
+}
+
+async function getDiscordGuildMember(guildId, userId) {
+  const cacheKey = `${String(guildId)}:${String(userId)}`;
+  const now = Date.now();
+  const cached = discordMemberCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
+  if (discordMemberPending.has(cacheKey)) {
+    return discordMemberPending.get(cacheKey);
+  }
+
+  const pending = fetchDiscordGuildMember(guildId, userId)
+    .then((value) => {
+      discordMemberCache.set(cacheKey, {
+        value,
+        expiresAt: Date.now() + Math.max(15_000, DISCORD_MEMBER_CACHE_TTL_MS),
+      });
+      return value;
+    })
+    .finally(() => {
+      discordMemberPending.delete(cacheKey);
+    });
+
+  discordMemberPending.set(cacheKey, pending);
+  return pending;
+}
+
+async function resolveFactionAccess(user, ownerId, faction) {
+  const isOwnerLeader = Boolean(
+    user && String(user.id) === String(ownerId) && isLeaderUser(user)
+  );
+
+  if (isOwnerLeader) {
+    return {
+      canView: true,
+      canEdit: true,
+      matchedBy: "leader",
+    };
+  }
+
+  if (!user || !user.id) {
+    return {
+      canView: false,
+      canEdit: false,
+      matchedBy: "unauthenticated",
+    };
+  }
+
+  const guildId = String(faction?.serverId || "").trim();
+  const roleId = String(faction?.roleId || "").trim();
+  if (!isDiscordSnowflake(guildId)) {
+    return {
+      canView: false,
+      canEdit: false,
+      matchedBy: "missing_server",
+    };
+  }
+
+  const membership = await getDiscordGuildMember(guildId, String(user.id));
+  if (!membership.available || !membership.isMember) {
+    return {
+      canView: false,
+      canEdit: false,
+      matchedBy: membership.available ? "not_member" : "membership_check_failed",
+    };
+  }
+
+  if (isDiscordSnowflake(roleId) && membership.roles.includes(roleId)) {
+    return {
+      canView: true,
+      canEdit: false,
+      matchedBy: "role",
+    };
+  }
+
+  return {
+    canView: true,
+    canEdit: false,
+    matchedBy: "member",
+  };
+}
+
+async function getFactionTabsForUser(user) {
+  if (!user || !user.id) {
+    return [];
+  }
+
+  const checks = await Promise.all(
+    Object.entries(factionState.factions).map(async ([ownerId, faction]) => {
+      const access = await resolveFactionAccess(user, ownerId, faction);
+      if (!access.canView) {
+        return null;
+      }
+
+      const publicFaction = toPublicFaction(faction, {
+        includeDrafts: access.canEdit,
+        includePrivate: false,
+      });
+      if (!publicFaction?.siteUrl) {
+        return null;
+      }
+
+      return {
+        slug: publicFaction.slug,
+        siteUrl: publicFaction.siteUrl,
+        name: publicFaction.name || "Фракция",
+        avatarUrl: publicFaction.avatarUrl || "",
+        canEdit: access.canEdit,
+      };
+    })
+  );
+
+  return checks
+    .filter(Boolean)
+    .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "ru"));
+}
+
 function isAdminUser(user) {
   if (!user || !user.id) {
     return false;
@@ -1184,8 +1366,8 @@ function toPublicFaction(faction, { includeDrafts = false, includePrivate = fals
 }
 
 function handleMyFaction(req, res) {
-  const { session } = getSession(req, res);
-  if (!session || !session.user) {
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
     return sendJson(res, 200, {
       authenticated: false,
       isLeader: false,
@@ -1193,14 +1375,32 @@ function handleMyFaction(req, res) {
     });
   }
 
-  const leader = isLeaderUser(session.user);
-  const faction = factionState.factions[String(session.user.id)] || null;
+  const leader = isLeaderUser(user);
+  const faction = factionState.factions[String(user.id)] || null;
   return sendJson(res, 200, {
     authenticated: true,
     isLeader: leader,
     faction: faction
       ? toPublicFaction(faction, { includeDrafts: leader, includePrivate: leader })
       : null,
+  });
+}
+
+async function handleFactionNav(req, res) {
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
+    return sendJson(res, 200, {
+      authenticated: false,
+      isLeader: false,
+      tabs: [],
+    });
+  }
+
+  const tabs = await getFactionTabsForUser(user);
+  return sendJson(res, 200, {
+    authenticated: true,
+    isLeader: isLeaderUser(user),
+    tabs,
   });
 }
 
@@ -1288,25 +1488,29 @@ async function handleUpdateMyFaction(req, res) {
   }
 }
 
-function handleFactionSiteRead(req, res, rawSlug) {
+async function handleFactionSiteRead(req, res, rawSlug) {
   const record = getFactionRecordBySlug(rawSlug);
   if (!record) {
     return sendJson(res, 404, { error: "Faction not found" });
   }
 
-  const { session } = getSession(req, res);
-  const user = session?.user || null;
-  const isOwnerLeader = Boolean(
-    user && String(user.id) === String(record.ownerId) && isLeaderUser(user)
-  );
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
+    return sendJson(res, 401, { error: "Auth required" });
+  }
+
+  const access = await resolveFactionAccess(user, record.ownerId, record.faction);
+  if (!access.canView) {
+    return sendJson(res, 403, { error: "Faction access denied" });
+  }
 
   return sendJson(res, 200, {
-    authenticated: Boolean(user),
-    isLeader: Boolean(user && isLeaderUser(user)),
-    canEdit: isOwnerLeader,
+    authenticated: true,
+    isLeader: isLeaderUser(user),
+    canEdit: access.canEdit,
     faction: toPublicFaction(record.faction, {
-      includeDrafts: isOwnerLeader,
-      includePrivate: isOwnerLeader,
+      includeDrafts: access.canEdit,
+      includePrivate: access.canEdit,
     }),
   });
 }
@@ -1385,6 +1589,11 @@ async function handleFactionStatementCreate(req, res, rawSlug) {
   const user = getAuthorizedUser(req, res);
   if (!user) {
     return;
+  }
+
+  const access = await resolveFactionAccess(user, record.ownerId, record.faction);
+  if (!access.canView) {
+    return sendJson(res, 403, { error: "Faction access denied" });
   }
 
   let payload;
@@ -1713,23 +1922,34 @@ function sendBodyParseError(res, error) {
 }
 
 function handleAdminPage(req, res, method) {
-  const { session } = getSession(req, res);
-  if (!session || !session.user) {
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
     return redirect(res, appendAuthError("/", "auth_required"));
   }
 
-  if (!isAdminUser(session.user)) {
+  if (!isAdminUser(user)) {
     return redirect(res, appendAuthError("/", "forbidden"));
   }
 
   return serveStaticFile("/admin.html", res, method);
 }
 
-function handleFactionSitePage(req, res, method, rawSlug) {
+async function handleFactionSitePage(req, res, method, rawSlug) {
   const record = getFactionRecordBySlug(rawSlug);
   if (!record) {
     return sendJson(res, 404, { error: "Faction not found" });
   }
+
+  const user = getAuthenticatedUser(req, res, { createSessionIfNeeded: true });
+  if (!user) {
+    return redirect(res, appendAuthError("/", "auth_required"));
+  }
+
+  const access = await resolveFactionAccess(user, record.ownerId, record.faction);
+  if (!access.canView) {
+    return redirect(res, appendAuthError("/", "forbidden"));
+  }
+
   return serveStaticFile("/faction-site.html", res, method);
 }
 

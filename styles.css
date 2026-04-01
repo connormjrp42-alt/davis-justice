@@ -247,6 +247,36 @@ body::before {
   border-color: #f0f0f0;
 }
 
+.department-nav-faction-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.department-nav-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: #141414;
+  color: #ffffff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.department-nav-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 .hero,
 .page-hero {
   margin-top: 1.35rem;
