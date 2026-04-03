@@ -41,12 +41,6 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const SETTINGS_PATH = path.join(DATA_DIR, "site-settings.json");
 const FACTION_STATE_PATH = path.join(DATA_DIR, "faction-state.json");
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
-const CONSULTANT_MAX_TEXT_CHARS = Number(process.env.CONSULTANT_MAX_TEXT_CHARS || 700_000);
-const CONSULTANT_MAX_QUESTION_CHARS = Number(process.env.CONSULTANT_MAX_QUESTION_CHARS || 1_000);
-const CONSULTANT_MAX_UPLOAD_BYTES = Number(
-  process.env.CONSULTANT_MAX_UPLOAD_BYTES || 30 * 1024 * 1024
-);
-const CONSULTANT_MAX_FILE_BYTES = Number(process.env.CONSULTANT_MAX_FILE_BYTES || 10 * 1024 * 1024);
 const CONSULTANT_MAX_FILES_PER_UPLOAD = Number(process.env.CONSULTANT_MAX_FILES_PER_UPLOAD || 8);
 const CONSULTANT_MAX_FILES_PER_SERVER = Number(process.env.CONSULTANT_MAX_FILES_PER_SERVER || 60);
 const MAX_IMAGE_DATA_URL_CHARS = Number(
@@ -416,8 +410,7 @@ function sanitizeSettings(input) {
   const legacyLawsText = String(consultant.lawsText || "")
     .replace(/\r\n/g, "\n")
     .replace(/\u0000/g, "")
-    .trim()
-    .slice(0, CONSULTANT_MAX_TEXT_CHARS);
+    .trim();
   if (!hasAnyServerText && legacyLawsText) {
     serverBases[MAJESTIC_SERVERS[0].id] = sanitizeConsultantServerBase({
       lawsText: legacyLawsText,
@@ -457,8 +450,7 @@ function sanitizeConsultantServerBase(input) {
   const lawsText = String(source.lawsText || "")
     .replace(/\r\n/g, "\n")
     .replace(/\u0000/g, "")
-    .trim()
-    .slice(0, CONSULTANT_MAX_TEXT_CHARS);
+    .trim();
   const files = Array.isArray(source.files)
     ? source.files
         .map((entry) => sanitizeConsultantFileMeta(entry))
@@ -539,7 +531,6 @@ function toPublicSettings(settings) {
     },
     consultant: {
       enabled: consultantEnabled,
-      maxQuestionChars: CONSULTANT_MAX_QUESTION_CHARS,
       servers,
     },
   };
@@ -576,8 +567,6 @@ function toAdminSettingsResponse(settings) {
       enabled: consultant.enabled === undefined ? true : Boolean(consultant.enabled),
       servers,
       limits: {
-        maxUploadBytes: CONSULTANT_MAX_UPLOAD_BYTES,
-        maxFileBytes: CONSULTANT_MAX_FILE_BYTES,
         maxFilesPerUpload: CONSULTANT_MAX_FILES_PER_UPLOAD,
         allowedExtensions: Array.from(CONSULTANT_ALLOWED_FILE_EXTENSIONS),
       },
@@ -1726,14 +1715,10 @@ function handlePublicSettings(req, res) {
 
 async function handleConsultantAsk(req, res) {
   try {
-    const payload = await parseJsonBody(
-      req,
-      Math.max(8 * 1024, CONSULTANT_MAX_QUESTION_CHARS * 8)
-    );
+    const payload = await parseJsonBody(req, MAX_JSON_BODY_BYTES);
     const question = String(payload?.question || "")
       .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, CONSULTANT_MAX_QUESTION_CHARS);
+      .trim();
     const serverId = String(payload?.serverId || "")
       .trim()
       .toLowerCase();
@@ -2127,7 +2112,7 @@ async function handleAdminConsultantUpload(req, res) {
   }
 
   try {
-    const payload = await parseMultipartFormData(req, CONSULTANT_MAX_UPLOAD_BYTES);
+    const payload = await parseMultipartFormData(req);
     const serverId = String(payload.fields?.serverId || "")
       .trim()
       .toLowerCase();
@@ -2195,12 +2180,6 @@ async function handleAdminConsultantUpload(req, res) {
       .join("\n\n")
       .replace(/\r\n/g, "\n")
       .trim();
-    if (mergedText.length > CONSULTANT_MAX_TEXT_CHARS) {
-      return sendJson(res, 413, {
-        error: "Law base too large",
-        details: `Text limit for one server is ${CONSULTANT_MAX_TEXT_CHARS} symbols.`,
-      });
-    }
 
     const mergedFiles = [...appendedMeta, ...(currentBase.files || [])]
       .map((entry) => sanitizeConsultantFileMeta(entry))
@@ -2871,7 +2850,7 @@ function parseJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
   });
 }
 
-function parseMultipartFormData(req, maxBytes = CONSULTANT_MAX_UPLOAD_BYTES) {
+function parseMultipartFormData(req, maxBytes = Number.POSITIVE_INFINITY) {
   return new Promise((resolve, reject) => {
     const contentType = String(req.headers["content-type"] || "");
     const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
@@ -2888,7 +2867,7 @@ function parseMultipartFormData(req, maxBytes = CONSULTANT_MAX_UPLOAD_BYTES) {
     req.on("data", (chunk) => {
       if (tooLarge) return;
       total += chunk.length;
-      if (total > maxBytes) {
+      if (Number.isFinite(maxBytes) && total > maxBytes) {
         tooLarge = true;
         reject(new Error("Payload too large"));
         return;
@@ -2980,10 +2959,6 @@ async function extractConsultantTextFromFile(file) {
   if (!CONSULTANT_ALLOWED_FILE_EXTENSIONS.has(ext)) {
     throw new Error(`Unsupported file type: ${ext || "unknown"}. Use PDF, DOC, DOCX or TXT.`);
   }
-  if (file.size > CONSULTANT_MAX_FILE_BYTES) {
-    const maxMb = Math.max(1, Math.round(CONSULTANT_MAX_FILE_BYTES / (1024 * 1024)));
-    throw new Error(`File ${filename} is too large. Max size is ${maxMb} MB.`);
-  }
 
   let extracted = "";
   if (ext === ".txt") {
@@ -3050,13 +3025,10 @@ function getMammoth() {
 function sendBodyParseError(res, error) {
   const message = String(error?.message || "").toLowerCase();
   if (message.includes("payload too large")) {
-    const maxMb = Math.max(
-      1,
-      Math.round(Math.max(MAX_JSON_BODY_BYTES, CONSULTANT_MAX_UPLOAD_BYTES) / (1024 * 1024))
-    );
+    const maxMb = Math.max(1, Math.round(MAX_JSON_BODY_BYTES / (1024 * 1024)));
     return sendJson(res, 413, {
       error: "Payload too large",
-      details: `Use a smaller request payload. Max request size is ${maxMb} MB.`,
+      details: `Use a smaller request payload. Max JSON request size is ${maxMb} MB.`,
     });
   }
 

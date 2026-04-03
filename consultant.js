@@ -44,7 +44,6 @@ async function initConsultantPage() {
     const settings = await response.json();
     const consultant = settings && settings.consultant ? settings.consultant : {};
     const enabled = Boolean(consultant.enabled);
-    const maxQuestionChars = Number(consultant.maxQuestionChars || 1000);
     consultantServers = Array.isArray(consultant.servers) ? consultant.servers : [];
 
     if (!enabled) {
@@ -57,10 +56,6 @@ async function initConsultantPage() {
       setConsultantState("Список серверов недоступен.", true);
       populateServerSelect([]);
       return;
-    }
-
-    if (consultantQuestionInput && Number.isFinite(maxQuestionChars) && maxQuestionChars > 0) {
-      consultantQuestionInput.maxLength = maxQuestionChars;
     }
 
     populateServerSelect(consultantServers);
