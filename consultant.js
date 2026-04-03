@@ -1,4 +1,5 @@
 const consultantForm = document.getElementById("consultant-form");
+const consultantServerSelect = document.getElementById("consultant-server");
 const consultantQuestionInput = document.getElementById("consultant-question");
 const consultantState = document.getElementById("consultant-state");
 const consultantResult = document.getElementById("consultant-result");
@@ -8,12 +9,18 @@ const consultantMatches = document.getElementById("consultant-matches");
 const consultantSubmitButton = document.getElementById("consultant-submit");
 const consultantClearButton = document.getElementById("consultant-clear");
 
+let consultantServers = [];
+
 if (consultantForm) {
   consultantForm.addEventListener("submit", onConsultantSubmit);
 }
 
 if (consultantClearButton) {
   consultantClearButton.addEventListener("click", onConsultantClear);
+}
+
+if (consultantServerSelect) {
+  consultantServerSelect.addEventListener("change", onServerChanged);
 }
 
 initConsultantPage();
@@ -37,16 +44,18 @@ async function initConsultantPage() {
     const settings = await response.json();
     const consultant = settings && settings.consultant ? settings.consultant : {};
     const enabled = Boolean(consultant.enabled);
-    const hasLaws = Boolean(consultant.hasLaws);
     const maxQuestionChars = Number(consultant.maxQuestionChars || 1000);
+    consultantServers = Array.isArray(consultant.servers) ? consultant.servers : [];
 
     if (!enabled) {
       setConsultantState("Консультант отключен администратором.", true);
+      populateServerSelect([]);
       return;
     }
 
-    if (!hasLaws) {
-      setConsultantState("База норм пока не заполнена. Обратитесь к администратору.", true);
+    if (!consultantServers.length) {
+      setConsultantState("Список серверов недоступен.", true);
+      populateServerSelect([]);
       return;
     }
 
@@ -54,16 +63,79 @@ async function initConsultantPage() {
       consultantQuestionInput.maxLength = maxQuestionChars;
     }
 
+    populateServerSelect(consultantServers);
     setFormEnabled(true);
-    setConsultantState("Консультант готов к работе.", false, true);
+    onServerChanged();
   } catch (error) {
     console.error("Consultant settings load error:", error);
     setConsultantState("Не удалось загрузить настройки консультанта.", true);
   }
 }
 
+function populateServerSelect(servers) {
+  if (!consultantServerSelect) return;
+  const savedServerId = String(localStorage.getItem("dj_consultant_server_id") || "").trim();
+  consultantServerSelect.innerHTML = "";
+
+  servers.forEach((server) => {
+    const option = document.createElement("option");
+    option.value = String(server.id || "").trim();
+    option.textContent = String(server.name || option.value || "Server");
+    consultantServerSelect.appendChild(option);
+  });
+
+  if (!servers.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Нет доступных серверов";
+    consultantServerSelect.appendChild(option);
+    consultantServerSelect.value = "";
+    return;
+  }
+
+  const fallbackServer = servers.find((server) => Boolean(server.hasLaws)) || servers[0];
+  const canRestore = servers.some((server) => String(server.id || "") === savedServerId);
+  consultantServerSelect.value = canRestore ? savedServerId : String(fallbackServer.id || "");
+}
+
+function onServerChanged() {
+  if (consultantResult) {
+    consultantResult.hidden = true;
+  }
+  if (consultantMatches) {
+    consultantMatches.innerHTML = "";
+  }
+
+  const serverId = String(consultantServerSelect?.value || "").trim();
+  if (!serverId) {
+    setConsultantState("Выберите сервер Majestic.", true);
+    setFormEnabled(false);
+    return;
+  }
+
+  localStorage.setItem("dj_consultant_server_id", serverId);
+  const server = consultantServers.find((entry) => String(entry.id || "") === serverId);
+  if (!server || !server.hasLaws) {
+    setConsultantState(
+      "Для выбранного сервера база законодательства пока не загружена администратором.",
+      true
+    );
+    setQuestionEnabled(false);
+    return;
+  }
+
+  setQuestionEnabled(true);
+  setConsultantState(`Сервер: ${server.name}. Можно задавать вопрос.`, false, true);
+}
+
 async function onConsultantSubmit(event) {
   event.preventDefault();
+
+  const serverId = String(consultantServerSelect?.value || "").trim();
+  if (!serverId) {
+    setConsultantState("Выберите сервер Majestic.", true);
+    return;
+  }
 
   const question = String(consultantQuestionInput?.value || "")
     .replace(/\s+/g, " ")
@@ -83,7 +155,7 @@ async function onConsultantSubmit(event) {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, serverId }),
     });
 
     const payload = await safeJson(response);
@@ -95,7 +167,8 @@ async function onConsultantSubmit(event) {
     }
 
     renderConsultantResult(payload || {});
-    setConsultantState("Ответ готов.", false, true);
+    const serverName = String(payload?.server?.name || "").trim();
+    setConsultantState(serverName ? `Ответ готов (${serverName}).` : "Ответ готов.", false, true);
   } catch (error) {
     console.error("Consultant request error:", error);
     setConsultantState("Ошибка сети. Попробуйте позже.", true);
@@ -151,15 +224,33 @@ function setBusy(isBusy) {
   if (consultantQuestionInput) {
     consultantQuestionInput.disabled = isBusy;
   }
+  if (consultantServerSelect) {
+    consultantServerSelect.disabled = isBusy;
+  }
 }
 
 function setFormEnabled(enabled) {
   if (!consultantForm || !consultantQuestionInput || !consultantSubmitButton || !consultantClearButton) {
     return;
   }
+  if (consultantServerSelect) {
+    consultantServerSelect.disabled = !enabled;
+  }
   consultantQuestionInput.disabled = !enabled;
   consultantSubmitButton.disabled = !enabled;
   consultantClearButton.disabled = !enabled;
+}
+
+function setQuestionEnabled(enabled) {
+  if (consultantQuestionInput) {
+    consultantQuestionInput.disabled = !enabled;
+  }
+  if (consultantSubmitButton) {
+    consultantSubmitButton.disabled = !enabled;
+  }
+  if (consultantClearButton) {
+    consultantClearButton.disabled = !enabled;
+  }
 }
 
 function setConsultantState(text, isError = false, isOk = false) {

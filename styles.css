@@ -540,10 +540,6 @@ h1 {
   color: #95d99f;
 }
 
-.consultant-laws-text {
-  min-height: 220px;
-}
-
 .consultant-card {
   margin-top: 1.2rem;
   background: var(--bg-elevated);
@@ -567,6 +563,10 @@ h1 {
 
 .consultant-form {
   margin-top: 0.8rem;
+}
+
+.consultant-server {
+  margin-bottom: 0.55rem;
 }
 
 .consultant-question {
@@ -629,6 +629,12 @@ h1 {
   margin: 0.45rem 0 0;
   color: var(--text-soft);
   line-height: 1.5;
+}
+
+.consultant-files-list {
+  max-height: 180px;
+  overflow: auto;
+  padding-right: 0.25rem;
 }
 
 .leaders-list {

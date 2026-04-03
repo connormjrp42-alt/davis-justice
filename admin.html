@@ -78,19 +78,38 @@
               Включить вкладку «Консультант»
             </label>
             <p class="form-help">
-              Ответы формируются только по тексту ниже. Сами тексты не выдаются в публичном API.
+              Загружайте Word/PDF файлы по конкретному серверу Majestic.
             </p>
           </div>
 
           <div class="form-group">
-            <label class="form-label" for="consultant-laws-text">Тексты законов / норм</label>
-            <textarea
-              class="field-textarea consultant-laws-text"
-              id="consultant-laws-text"
-              maxlength="200000"
-              placeholder="Вставьте статьи, регламенты и внутренние нормы. Разделяйте блоки пустой строкой."
-            ></textarea>
-            <p class="form-help">До 200000 символов.</p>
+            <label class="form-label" for="consultant-server-select">Сервер Majestic</label>
+            <select class="field-input" id="consultant-server-select"></select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="consultant-files-input">Файлы законодательства</label>
+            <input
+              class="field-input"
+              id="consultant-files-input"
+              type="file"
+              accept=".pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+              multiple
+            />
+            <p class="form-help">Форматы: PDF, DOC, DOCX (можно TXT).</p>
+          </div>
+
+          <div class="admin-actions">
+            <button class="btn btn-secondary" id="consultant-upload" type="button">
+              Загрузить в базу сервера
+            </button>
+          </div>
+
+          <p class="admin-message" id="consultant-upload-message"></p>
+
+          <div class="form-group">
+            <p class="form-label">Загруженные файлы для сервера</p>
+            <div class="leaders-list consultant-files-list" id="consultant-files-list"></div>
           </div>
           <div class="admin-actions">
             <button class="btn btn-primary" type="submit">Сохранить</button>

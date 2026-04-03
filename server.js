@@ -41,8 +41,14 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const SETTINGS_PATH = path.join(DATA_DIR, "site-settings.json");
 const FACTION_STATE_PATH = path.join(DATA_DIR, "faction-state.json");
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
-const CONSULTANT_MAX_TEXT_CHARS = Number(process.env.CONSULTANT_MAX_TEXT_CHARS || 200_000);
+const CONSULTANT_MAX_TEXT_CHARS = Number(process.env.CONSULTANT_MAX_TEXT_CHARS || 700_000);
 const CONSULTANT_MAX_QUESTION_CHARS = Number(process.env.CONSULTANT_MAX_QUESTION_CHARS || 1_000);
+const CONSULTANT_MAX_UPLOAD_BYTES = Number(
+  process.env.CONSULTANT_MAX_UPLOAD_BYTES || 30 * 1024 * 1024
+);
+const CONSULTANT_MAX_FILE_BYTES = Number(process.env.CONSULTANT_MAX_FILE_BYTES || 10 * 1024 * 1024);
+const CONSULTANT_MAX_FILES_PER_UPLOAD = Number(process.env.CONSULTANT_MAX_FILES_PER_UPLOAD || 8);
+const CONSULTANT_MAX_FILES_PER_SERVER = Number(process.env.CONSULTANT_MAX_FILES_PER_SERVER || 60);
 const MAX_IMAGE_DATA_URL_CHARS = Number(
   process.env.MAX_IMAGE_DATA_URL_CHARS || 3_200_000
 );
@@ -56,6 +62,28 @@ const STATEMENT_TYPE_VALUES = new Set([
   "other",
 ]);
 const GLOBAL_STATEMENTS_WEBHOOK_URL = process.env.STATEMENTS_WEBHOOK_URL || "";
+const MAJESTIC_SERVERS = [
+  { id: "new-york", name: "New York" },
+  { id: "washington", name: "Washington" },
+  { id: "dallas", name: "Dallas" },
+  { id: "boston", name: "Boston" },
+  { id: "houston", name: "Houston" },
+  { id: "seattle", name: "Seattle" },
+  { id: "phoenix", name: "Phoenix" },
+  { id: "denver", name: "Denver" },
+  { id: "portland", name: "Portland" },
+  { id: "orlando", name: "Orlando" },
+  { id: "detroit", name: "Detroit" },
+  { id: "chicago", name: "Chicago" },
+  { id: "san-francisco", name: "San Francisco" },
+  { id: "atlanta", name: "Atlanta" },
+  { id: "san-diego", name: "San Diego" },
+  { id: "los-angeles", name: "Los Angeles" },
+  { id: "miami", name: "Miami" },
+  { id: "las-vegas", name: "Las Vegas" },
+];
+const MAJESTIC_SERVER_MAP = new Map(MAJESTIC_SERVERS.map((server) => [server.id, server]));
+const CONSULTANT_ALLOWED_FILE_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".txt"]);
 const DEFAULT_SETTINGS = {
   announcement: {
     enabled: false,
@@ -64,7 +92,7 @@ const DEFAULT_SETTINGS = {
   },
   consultant: {
     enabled: true,
-    lawsText: "",
+    serverBases: {},
   },
 };
 const DEFAULT_FACTION_STATE = {
@@ -147,6 +175,8 @@ const CONSULTANT_STOP_WORDS = new Set([
 const sessions = new Map();
 const discordMemberCache = new Map();
 const discordMemberPending = new Map();
+let cachedPdfParse = null;
+let cachedMammoth = null;
 let siteSettings = loadSettings();
 let factionState = loadFactionState();
 
@@ -221,6 +251,10 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/admin/settings" && req.method === "PUT") {
       return handleAdminSettingsUpdate(req, res);
+    }
+
+    if (pathname === "/api/admin/consultant/upload" && req.method === "POST") {
+      return handleAdminConsultantUpload(req, res);
     }
 
     if ((pathname === "/auth/discord" || pathname === "/auth/discord/") && req.method === "GET") {
@@ -363,11 +397,41 @@ function sanitizeSettings(input) {
 
   const title = String(announcement.title || "").trim().slice(0, 120);
   const text = String(announcement.text || "").trim().slice(0, 700);
-  const lawsText = String(consultant.lawsText || "")
+  const rawServerBases =
+    consultant.serverBases && typeof consultant.serverBases === "object"
+      ? consultant.serverBases
+      : {};
+  const serverBases = {};
+  let hasAnyServerText = false;
+
+  MAJESTIC_SERVERS.forEach((server) => {
+    const base = sanitizeConsultantServerBase(rawServerBases[server.id]);
+    if (base.lawsText) {
+      hasAnyServerText = true;
+    }
+    serverBases[server.id] = base;
+  });
+
+  // Migration for legacy schema with one global text field.
+  const legacyLawsText = String(consultant.lawsText || "")
     .replace(/\r\n/g, "\n")
     .replace(/\u0000/g, "")
     .trim()
     .slice(0, CONSULTANT_MAX_TEXT_CHARS);
+  if (!hasAnyServerText && legacyLawsText) {
+    serverBases[MAJESTIC_SERVERS[0].id] = sanitizeConsultantServerBase({
+      lawsText: legacyLawsText,
+      files: [
+        {
+          id: `legacy-${Date.now()}`,
+          name: "legacy-laws-text.txt",
+          type: "text/plain",
+          size: Buffer.byteLength(legacyLawsText, "utf-8"),
+          uploadedAt: new Date().toISOString(),
+        },
+      ],
+    });
+  }
 
   return {
     announcement: {
@@ -377,7 +441,7 @@ function sanitizeSettings(input) {
     },
     consultant: {
       enabled: consultantEnabled,
-      lawsText,
+      serverBases,
     },
   };
 }
@@ -386,6 +450,57 @@ function saveSettings(nextSettings) {
   siteSettings = sanitizeSettings(nextSettings);
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(siteSettings, null, 2), "utf-8");
   return siteSettings;
+}
+
+function sanitizeConsultantServerBase(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const lawsText = String(source.lawsText || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim()
+    .slice(0, CONSULTANT_MAX_TEXT_CHARS);
+  const files = Array.isArray(source.files)
+    ? source.files
+        .map((entry) => sanitizeConsultantFileMeta(entry))
+        .filter(Boolean)
+        .slice(0, CONSULTANT_MAX_FILES_PER_SERVER)
+    : [];
+  return {
+    lawsText,
+    files,
+  };
+}
+
+function sanitizeConsultantFileMeta(input) {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const id = String(input.id || "").trim().slice(0, 120);
+  const name = String(input.name || "").trim().slice(0, 240);
+  if (!id || !name) {
+    return null;
+  }
+
+  const type = String(input.type || "").trim().slice(0, 80) || "application/octet-stream";
+  const size = Number(input.size || 0);
+  const uploadedAtRaw = String(input.uploadedAt || "").trim();
+  const uploadedAt = uploadedAtRaw && !Number.isNaN(Date.parse(uploadedAtRaw))
+    ? new Date(uploadedAtRaw).toISOString()
+    : new Date().toISOString();
+
+  return {
+    id,
+    name,
+    type,
+    size: Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 0,
+    uploadedAt,
+  };
+}
+
+function getMajesticServerInfo(serverId) {
+  const cleanId = String(serverId || "").trim().toLowerCase();
+  return MAJESTIC_SERVER_MAP.get(cleanId) || null;
 }
 
 function toPublicSettings(settings) {
@@ -402,6 +517,19 @@ function toPublicSettings(settings) {
     consultant.enabled === undefined
       ? DEFAULT_SETTINGS.consultant.enabled
       : Boolean(consultant.enabled);
+  const serverBases =
+    consultant.serverBases && typeof consultant.serverBases === "object"
+      ? consultant.serverBases
+      : {};
+  const servers = MAJESTIC_SERVERS.map((server) => {
+    const base = sanitizeConsultantServerBase(serverBases[server.id]);
+    return {
+      id: server.id,
+      name: server.name,
+      hasLaws: Boolean(base.lawsText),
+      filesCount: Array.isArray(base.files) ? base.files.length : 0,
+    };
+  });
 
   return {
     announcement: {
@@ -411,8 +539,48 @@ function toPublicSettings(settings) {
     },
     consultant: {
       enabled: consultantEnabled,
-      hasLaws: Boolean(String(consultant.lawsText || "").trim()),
       maxQuestionChars: CONSULTANT_MAX_QUESTION_CHARS,
+      servers,
+    },
+  };
+}
+
+function toAdminSettingsResponse(settings) {
+  const source = settings && typeof settings === "object" ? settings : DEFAULT_SETTINGS;
+  const consultant =
+    source.consultant && typeof source.consultant === "object"
+      ? source.consultant
+      : DEFAULT_SETTINGS.consultant;
+  const serverBases =
+    consultant.serverBases && typeof consultant.serverBases === "object"
+      ? consultant.serverBases
+      : {};
+  const servers = MAJESTIC_SERVERS.map((server) => {
+    const base = sanitizeConsultantServerBase(serverBases[server.id]);
+    return {
+      id: server.id,
+      name: server.name,
+      files: base.files,
+      hasLaws: Boolean(base.lawsText),
+      textChars: base.lawsText.length,
+    };
+  });
+
+  return {
+    announcement: {
+      enabled: Boolean(source.announcement?.enabled),
+      title: String(source.announcement?.title || ""),
+      text: String(source.announcement?.text || ""),
+    },
+    consultant: {
+      enabled: consultant.enabled === undefined ? true : Boolean(consultant.enabled),
+      servers,
+      limits: {
+        maxUploadBytes: CONSULTANT_MAX_UPLOAD_BYTES,
+        maxFileBytes: CONSULTANT_MAX_FILE_BYTES,
+        maxFilesPerUpload: CONSULTANT_MAX_FILES_PER_UPLOAD,
+        allowedExtensions: Array.from(CONSULTANT_ALLOWED_FILE_EXTENSIONS),
+      },
     },
   };
 }
@@ -1566,11 +1734,21 @@ async function handleConsultantAsk(req, res) {
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, CONSULTANT_MAX_QUESTION_CHARS);
+    const serverId = String(payload?.serverId || "")
+      .trim()
+      .toLowerCase();
+    const serverInfo = getMajesticServerInfo(serverId);
 
     if (!question) {
       return sendJson(res, 400, {
         error: "Question is required",
         details: "Send question in JSON body: {\"question\":\"...\"}",
+      });
+    }
+    if (!serverInfo) {
+      return sendJson(res, 400, {
+        error: "Invalid serverId",
+        details: "Choose one of Majestic servers before sending the question.",
       });
     }
 
@@ -1584,17 +1762,26 @@ async function handleConsultantAsk(req, res) {
       });
     }
 
-    const lawsText = String(consultant.lawsText || "").trim();
+    const serverBases =
+      consultant.serverBases && typeof consultant.serverBases === "object"
+        ? consultant.serverBases
+        : {};
+    const serverBase = sanitizeConsultantServerBase(serverBases[serverInfo.id]);
+    const lawsText = String(serverBase.lawsText || "").trim();
     if (!lawsText) {
       return sendJson(res, 409, {
         error: "Law base is empty",
-        details: "Add law texts in admin panel first.",
+        details: `Add files for ${serverInfo.name} in admin panel first.`,
       });
     }
 
     const result = buildConsultantResponse(question, lawsText);
     return sendJson(res, 200, {
       ok: true,
+      server: {
+        id: serverInfo.id,
+        name: serverInfo.name,
+      },
       ...result,
     });
   } catch (error) {
@@ -1894,7 +2081,7 @@ function handleAdminSettings(req, res) {
     return;
   }
 
-  return sendJson(res, 200, siteSettings);
+  return sendJson(res, 200, toAdminSettingsResponse(siteSettings));
 }
 
 async function handleAdminSettingsUpdate(req, res) {
@@ -1918,14 +2105,135 @@ async function handleAdminSettingsUpdate(req, res) {
       },
       consultant: {
         ...(current.consultant || {}),
-        ...(incoming.consultant && typeof incoming.consultant === "object"
-          ? incoming.consultant
-          : {}),
+        enabled:
+          incoming.consultant && typeof incoming.consultant === "object"
+            ? Boolean(incoming.consultant.enabled)
+            : Boolean(current.consultant?.enabled),
       },
     });
     return sendJson(res, 200, {
       ok: true,
-      settings: nextSettings,
+      settings: toAdminSettingsResponse(nextSettings),
+    });
+  } catch (error) {
+    return sendBodyParseError(res, error);
+  }
+}
+
+async function handleAdminConsultantUpload(req, res) {
+  const user = getAuthorizedAdmin(req, res);
+  if (!user) {
+    return;
+  }
+
+  try {
+    const payload = await parseMultipartFormData(req, CONSULTANT_MAX_UPLOAD_BYTES);
+    const serverId = String(payload.fields?.serverId || "")
+      .trim()
+      .toLowerCase();
+    const serverInfo = getMajesticServerInfo(serverId);
+    if (!serverInfo) {
+      return sendJson(res, 400, {
+        error: "Invalid serverId",
+        details: "Select a Majestic server before uploading files.",
+      });
+    }
+
+    const files = Array.isArray(payload.files) ? payload.files.filter((file) => file.data?.length) : [];
+    if (!files.length) {
+      return sendJson(res, 400, {
+        error: "No files uploaded",
+        details: "Attach at least one PDF/Word file.",
+      });
+    }
+    if (files.length > CONSULTANT_MAX_FILES_PER_UPLOAD) {
+      return sendJson(res, 400, {
+        error: "Too many files",
+        details: `Upload up to ${CONSULTANT_MAX_FILES_PER_UPLOAD} files at once.`,
+      });
+    }
+
+    const consultant =
+      siteSettings?.consultant && typeof siteSettings.consultant === "object"
+        ? siteSettings.consultant
+        : DEFAULT_SETTINGS.consultant;
+    const serverBases =
+      consultant.serverBases && typeof consultant.serverBases === "object"
+        ? { ...consultant.serverBases }
+        : {};
+    const currentBase = sanitizeConsultantServerBase(serverBases[serverInfo.id]);
+    const appendBlocks = [];
+    const appendedMeta = [];
+
+    for (const file of files) {
+      const text = await extractConsultantTextFromFile(file);
+      if (!text) {
+        continue;
+      }
+      const uploadedAt = new Date().toISOString();
+      appendBlocks.push(
+        `[Источник: ${file.filename}; дата: ${uploadedAt}]\n${text.trim()}`
+      );
+      appendedMeta.push({
+        id: `f_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
+        name: file.filename,
+        type: file.contentType || "application/octet-stream",
+        size: file.size,
+        uploadedAt,
+      });
+    }
+
+    if (!appendBlocks.length) {
+      return sendJson(res, 400, {
+        error: "No readable content",
+        details: "Unable to extract text from uploaded files.",
+      });
+    }
+
+    const mergedText = [currentBase.lawsText, ...appendBlocks]
+      .filter(Boolean)
+      .join("\n\n")
+      .replace(/\r\n/g, "\n")
+      .trim();
+    if (mergedText.length > CONSULTANT_MAX_TEXT_CHARS) {
+      return sendJson(res, 413, {
+        error: "Law base too large",
+        details: `Text limit for one server is ${CONSULTANT_MAX_TEXT_CHARS} symbols.`,
+      });
+    }
+
+    const mergedFiles = [...appendedMeta, ...(currentBase.files || [])]
+      .map((entry) => sanitizeConsultantFileMeta(entry))
+      .filter(Boolean)
+      .slice(0, CONSULTANT_MAX_FILES_PER_SERVER);
+
+    serverBases[serverInfo.id] = {
+      lawsText: mergedText,
+      files: mergedFiles,
+    };
+
+    const nextSettings = saveSettings({
+      ...siteSettings,
+      consultant: {
+        ...(siteSettings.consultant || {}),
+        serverBases,
+      },
+    });
+
+    const settingsResponse = toAdminSettingsResponse(nextSettings);
+    const serverSummary = settingsResponse.consultant.servers.find((server) => server.id === serverInfo.id);
+
+    return sendJson(res, 200, {
+      ok: true,
+      uploadedCount: appendedMeta.length,
+      server: serverSummary || {
+        id: serverInfo.id,
+        name: serverInfo.name,
+        files: [],
+        hasLaws: false,
+        textChars: 0,
+      },
+      settings: settingsResponse,
     });
   } catch (error) {
     return sendBodyParseError(res, error);
@@ -2563,18 +2871,204 @@ function parseJsonBody(req, maxBytes = MAX_JSON_BODY_BYTES) {
   });
 }
 
+function parseMultipartFormData(req, maxBytes = CONSULTANT_MAX_UPLOAD_BYTES) {
+  return new Promise((resolve, reject) => {
+    const contentType = String(req.headers["content-type"] || "");
+    const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    const boundary = (boundaryMatch?.[1] || boundaryMatch?.[2] || "").trim();
+    if (!boundary) {
+      reject(new Error("Invalid multipart form-data boundary"));
+      return;
+    }
+
+    const chunks = [];
+    let total = 0;
+    let tooLarge = false;
+
+    req.on("data", (chunk) => {
+      if (tooLarge) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        tooLarge = true;
+        reject(new Error("Payload too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      if (tooLarge) return;
+      const bodyBuffer = Buffer.concat(chunks);
+      const raw = bodyBuffer.toString("latin1");
+      const delimiter = `--${boundary}`;
+      const segments = raw.split(delimiter);
+      const fields = {};
+      const files = [];
+
+      for (const segment of segments) {
+        if (!segment || segment === "--" || segment === "--\r\n") continue;
+
+        let normalizedPart = segment;
+        if (normalizedPart.startsWith("\r\n")) {
+          normalizedPart = normalizedPart.slice(2);
+        }
+        if (normalizedPart.endsWith("--")) {
+          normalizedPart = normalizedPart.slice(0, -2);
+        }
+        if (normalizedPart.endsWith("\r\n")) {
+          normalizedPart = normalizedPart.slice(0, -2);
+        }
+
+        const headerEnd = normalizedPart.indexOf("\r\n\r\n");
+        if (headerEnd < 0) {
+          continue;
+        }
+
+        const headerRaw = normalizedPart.slice(0, headerEnd);
+        const bodyRaw = normalizedPart.slice(headerEnd + 4);
+        const headers = Object.fromEntries(
+          headerRaw
+            .split("\r\n")
+            .map((line) => line.split(":"))
+            .filter((parts) => parts.length >= 2)
+            .map((parts) => [parts[0].trim().toLowerCase(), parts.slice(1).join(":").trim()])
+        );
+        const disposition = String(headers["content-disposition"] || "");
+        const nameMatch = disposition.match(/name="([^"]+)"/i);
+        const filenameMatch = disposition.match(/filename="([^"]*)"/i);
+        const fieldName = String(nameMatch?.[1] || "").trim();
+        if (!fieldName) {
+          continue;
+        }
+
+        if (filenameMatch) {
+          const originalName = sanitizeUploadFileName(filenameMatch[1] || "");
+          if (!originalName) {
+            continue;
+          }
+          const data = Buffer.from(bodyRaw, "latin1");
+          files.push({
+            fieldName,
+            filename: originalName,
+            contentType: String(headers["content-type"] || "application/octet-stream")
+              .trim()
+              .toLowerCase(),
+            data,
+            size: data.length,
+          });
+          continue;
+        }
+
+        fields[fieldName] = Buffer.from(bodyRaw, "latin1").toString("utf-8").trim();
+      }
+
+      resolve({ fields, files });
+    });
+
+    req.on("error", (error) => reject(error));
+  });
+}
+
+function sanitizeUploadFileName(value) {
+  const baseName = path.basename(String(value || "").trim());
+  return baseName.replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_").slice(0, 220);
+}
+
+async function extractConsultantTextFromFile(file) {
+  const filename = String(file?.filename || "").trim();
+  const ext = path.extname(filename).toLowerCase();
+  if (!CONSULTANT_ALLOWED_FILE_EXTENSIONS.has(ext)) {
+    throw new Error(`Unsupported file type: ${ext || "unknown"}. Use PDF, DOC, DOCX or TXT.`);
+  }
+  if (file.size > CONSULTANT_MAX_FILE_BYTES) {
+    const maxMb = Math.max(1, Math.round(CONSULTANT_MAX_FILE_BYTES / (1024 * 1024)));
+    throw new Error(`File ${filename} is too large. Max size is ${maxMb} MB.`);
+  }
+
+  let extracted = "";
+  if (ext === ".txt") {
+    extracted = file.data.toString("utf-8");
+  } else if (ext === ".pdf") {
+    const pdfParse = getPdfParse();
+    const parsed = await pdfParse(file.data);
+    extracted = String(parsed?.text || "");
+  } else if (ext === ".doc" || ext === ".docx") {
+    const mammoth = getMammoth();
+    try {
+      const parsed = await mammoth.extractRawText({ buffer: file.data });
+      extracted = String(parsed?.value || "");
+    } catch (error) {
+      if (ext === ".doc") {
+        throw new Error(
+          `File ${filename}: old .doc format is not fully supported. Save it as .docx and upload again.`
+        );
+      }
+      throw error;
+    }
+  }
+
+  const normalized = normalizeExtractedLawText(extracted);
+  if (!normalized) {
+    throw new Error(`File ${filename}: no readable text found.`);
+  }
+  return normalized;
+}
+
+function normalizeExtractedLawText(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function getPdfParse() {
+  if (cachedPdfParse) {
+    return cachedPdfParse;
+  }
+  try {
+    cachedPdfParse = require("pdf-parse");
+    return cachedPdfParse;
+  } catch (error) {
+    throw new Error("Missing dependency: pdf-parse. Run `npm install pdf-parse`.");
+  }
+}
+
+function getMammoth() {
+  if (cachedMammoth) {
+    return cachedMammoth;
+  }
+  try {
+    cachedMammoth = require("mammoth");
+    return cachedMammoth;
+  } catch (error) {
+    throw new Error("Missing dependency: mammoth. Run `npm install mammoth`.");
+  }
+}
+
 function sendBodyParseError(res, error) {
   const message = String(error?.message || "").toLowerCase();
   if (message.includes("payload too large")) {
-    const maxMb = Math.max(1, Math.round(MAX_JSON_BODY_BYTES / (1024 * 1024)));
+    const maxMb = Math.max(
+      1,
+      Math.round(Math.max(MAX_JSON_BODY_BYTES, CONSULTANT_MAX_UPLOAD_BYTES) / (1024 * 1024))
+    );
     return sendJson(res, 413, {
       error: "Payload too large",
-      details: `Reduce image size or use smaller files. Max request size is ${maxMb} MB.`,
+      details: `Use a smaller request payload. Max request size is ${maxMb} MB.`,
+    });
+  }
+
+  if (message.includes("multipart")) {
+    return sendJson(res, 400, {
+      error: "Invalid multipart body",
+      details: error?.message || "Unknown parse error",
     });
   }
 
   return sendJson(res, 400, {
-    error: "Invalid JSON body",
+    error: "Invalid request body",
     details: error?.message || "Unknown parse error",
   });
 }

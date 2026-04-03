@@ -6,7 +6,11 @@ const announcementEnabled = document.getElementById("announcement-enabled");
 const announcementTitle = document.getElementById("announcement-title");
 const announcementText = document.getElementById("announcement-text");
 const consultantEnabled = document.getElementById("consultant-enabled");
-const consultantLawsText = document.getElementById("consultant-laws-text");
+const consultantServerSelect = document.getElementById("consultant-server-select");
+const consultantFilesInput = document.getElementById("consultant-files-input");
+const consultantUploadButton = document.getElementById("consultant-upload");
+const consultantUploadMessage = document.getElementById("consultant-upload-message");
+const consultantFilesList = document.getElementById("consultant-files-list");
 
 const leadersStatus = document.getElementById("leaders-status");
 const leadersForm = document.getElementById("leaders-form");
@@ -17,12 +21,22 @@ const grantLeaderButton = document.getElementById("grant-leader");
 const revokeLeaderButton = document.getElementById("revoke-leader");
 const refreshLeadersButton = document.getElementById("refresh-leaders");
 
+let consultantServers = [];
+
 if (settingsForm) {
   settingsForm.addEventListener("submit", onSaveSettings);
 }
 
 if (reloadButton) {
   reloadButton.addEventListener("click", loadAdminSettings);
+}
+
+if (consultantServerSelect) {
+  consultantServerSelect.addEventListener("change", renderSelectedServerFiles);
+}
+
+if (consultantUploadButton) {
+  consultantUploadButton.addEventListener("click", onUploadConsultantFiles);
 }
 
 if (grantLeaderButton) {
@@ -42,6 +56,7 @@ loadAdminPanel();
 async function loadAdminPanel() {
   setMessage("");
   setLeadersMessage("");
+  setConsultantUploadMessage("");
   setStatus("Проверка доступа...");
 
   const access = await verifyAdminAccess();
@@ -115,10 +130,130 @@ async function loadAdminSettings() {
     announcementTitle.value = announcement.title || "";
     announcementText.value = announcement.text || "";
     consultantEnabled.checked = Boolean(consultant.enabled);
-    consultantLawsText.value = consultant.lawsText || "";
+
+    consultantServers = Array.isArray(consultant.servers) ? consultant.servers : [];
+    populateConsultantServers(consultantServers);
+    renderSelectedServerFiles();
+    setConsultantUploadMessage("");
   } catch (error) {
     console.error("Load admin settings error:", error);
     setMessage("Не удалось загрузить настройки.", true);
+  }
+}
+
+function populateConsultantServers(servers) {
+  if (!consultantServerSelect) return;
+  const currentSelected = String(consultantServerSelect.value || "").trim();
+  consultantServerSelect.innerHTML = "";
+
+  servers.forEach((server) => {
+    const option = document.createElement("option");
+    option.value = String(server.id || "").trim();
+    option.textContent = String(server.name || option.value || "Server");
+    consultantServerSelect.appendChild(option);
+  });
+
+  if (!servers.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Список серверов недоступен";
+    consultantServerSelect.appendChild(option);
+    consultantServerSelect.value = "";
+    return;
+  }
+
+  const canRestore = servers.some((server) => String(server.id || "") === currentSelected);
+  consultantServerSelect.value = canRestore ? currentSelected : String(servers[0].id || "");
+}
+
+function renderSelectedServerFiles() {
+  if (!consultantFilesList) return;
+  consultantFilesList.innerHTML = "";
+  setConsultantUploadMessage("");
+
+  const serverId = String(consultantServerSelect?.value || "").trim();
+  const selected = consultantServers.find((server) => String(server.id || "") === serverId);
+  const files = Array.isArray(selected?.files) ? selected.files : [];
+
+  if (!selected) {
+    const empty = document.createElement("p");
+    empty.className = "admin-status";
+    empty.textContent = "Выберите сервер.";
+    consultantFilesList.appendChild(empty);
+    return;
+  }
+
+  if (!files.length) {
+    const empty = document.createElement("p");
+    empty.className = "admin-status";
+    empty.textContent = "Для этого сервера пока нет загруженных файлов.";
+    consultantFilesList.appendChild(empty);
+    return;
+  }
+
+  files.forEach((file) => {
+    const pill = document.createElement("span");
+    pill.className = "leader-pill";
+    const sizeKb = Math.max(1, Math.round(Number(file.size || 0) / 1024));
+    pill.textContent = `${file.name || "file"} (${sizeKb} KB)`;
+    consultantFilesList.appendChild(pill);
+  });
+}
+
+async function onUploadConsultantFiles() {
+  const serverId = String(consultantServerSelect?.value || "").trim();
+  if (!serverId) {
+    setConsultantUploadMessage("Сначала выберите сервер Majestic.", true);
+    return;
+  }
+
+  const files = Array.from(consultantFilesInput?.files || []);
+  if (!files.length) {
+    setConsultantUploadMessage("Выберите минимум один файл для загрузки.", true);
+    return;
+  }
+
+  setConsultantUploadBusy(true);
+  setConsultantUploadMessage("Загрузка и обработка файлов...");
+
+  try {
+    const formData = new FormData();
+    formData.append("serverId", serverId);
+    files.forEach((file) => formData.append("lawsFiles", file, file.name));
+
+    const response = await fetch("/api/admin/consultant/upload", {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    });
+
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      const reason = payload && payload.error ? payload.error : "Ошибка загрузки";
+      const details = payload && payload.details ? ` ${payload.details}` : "";
+      setConsultantUploadMessage(`${reason}.${details}`.trim(), true);
+      return;
+    }
+
+    const nextServers =
+      payload && payload.settings && payload.settings.consultant
+        ? payload.settings.consultant.servers
+        : [];
+    consultantServers = Array.isArray(nextServers) ? nextServers : consultantServers;
+    populateConsultantServers(consultantServers);
+    consultantServerSelect.value = serverId;
+    renderSelectedServerFiles();
+
+    if (consultantFilesInput) {
+      consultantFilesInput.value = "";
+    }
+    const uploadedCount = Number(payload?.uploadedCount || files.length);
+    setConsultantUploadMessage(`Файлы загружены: ${uploadedCount}.`, false, true);
+  } catch (error) {
+    console.error("Consultant upload error:", error);
+    setConsultantUploadMessage("Не удалось загрузить файлы. Попробуйте снова.", true);
+  } finally {
+    setConsultantUploadBusy(false);
   }
 }
 
@@ -134,7 +269,6 @@ async function onSaveSettings(event) {
     },
     consultant: {
       enabled: consultantEnabled.checked,
-      lawsText: consultantLawsText.value.trim(),
     },
   };
 
@@ -164,7 +298,9 @@ async function onSaveSettings(event) {
     announcementTitle.value = saved.title || "";
     announcementText.value = saved.text || "";
     consultantEnabled.checked = Boolean(savedConsultant.enabled);
-    consultantLawsText.value = savedConsultant.lawsText || "";
+    consultantServers = Array.isArray(savedConsultant.servers) ? savedConsultant.servers : consultantServers;
+    populateConsultantServers(consultantServers);
+    renderSelectedServerFiles();
 
     setMessage("Настройки сохранены.", false, true);
   } catch (error) {
@@ -295,6 +431,26 @@ function setLeadersMessage(text, isError = false, isOk = false) {
   leadersMessage.classList.remove("error", "ok");
   if (isError) leadersMessage.classList.add("error");
   if (isOk) leadersMessage.classList.add("ok");
+}
+
+function setConsultantUploadMessage(text, isError = false, isOk = false) {
+  if (!consultantUploadMessage) return;
+  consultantUploadMessage.textContent = text;
+  consultantUploadMessage.classList.remove("error", "ok");
+  if (isError) consultantUploadMessage.classList.add("error");
+  if (isOk) consultantUploadMessage.classList.add("ok");
+}
+
+function setConsultantUploadBusy(isBusy) {
+  if (consultantUploadButton) {
+    consultantUploadButton.disabled = isBusy;
+  }
+  if (consultantFilesInput) {
+    consultantFilesInput.disabled = isBusy;
+  }
+  if (consultantServerSelect) {
+    consultantServerSelect.disabled = isBusy;
+  }
 }
 
 function toggleForm(visible) {
