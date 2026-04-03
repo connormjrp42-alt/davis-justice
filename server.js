@@ -1919,7 +1919,7 @@ function splitLawTextIntoChunks(rawText) {
     }
   });
 
-  return chunks.slice(0, 1200);
+  return chunks;
 }
 
 function normalizeConsultantText(value) {
@@ -2965,7 +2965,7 @@ async function extractConsultantTextFromFile(file) {
     extracted = file.data.toString("utf-8");
   } else if (ext === ".pdf") {
     const pdfParse = getPdfParse();
-    const parsed = await pdfParse(file.data);
+    const parsed = await pdfParse(file.data, { max: 0 });
     extracted = String(parsed?.text || "");
   } else if (ext === ".doc" || ext === ".docx") {
     const mammoth = getMammoth();
