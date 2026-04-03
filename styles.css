@@ -607,8 +607,24 @@ h1 {
   font-size: 0.9rem;
 }
 
-.consultant-matches {
+.consultant-toggle-details {
   margin-top: 0.75rem;
+}
+
+.consultant-details {
+  margin-top: 0.75rem;
+}
+
+.consultant-details-label {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+}
+
+.consultant-matches {
+  margin-top: 0.55rem;
   display: grid;
   gap: 0.65rem;
 }

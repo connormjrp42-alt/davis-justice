@@ -5,6 +5,8 @@ const consultantState = document.getElementById("consultant-state");
 const consultantResult = document.getElementById("consultant-result");
 const consultantAnswer = document.getElementById("consultant-answer");
 const consultantNotice = document.getElementById("consultant-notice");
+const consultantDetails = document.getElementById("consultant-details");
+const consultantToggleDetails = document.getElementById("consultant-toggle-details");
 const consultantMatches = document.getElementById("consultant-matches");
 const consultantSubmitButton = document.getElementById("consultant-submit");
 const consultantClearButton = document.getElementById("consultant-clear");
@@ -21,6 +23,10 @@ if (consultantClearButton) {
 
 if (consultantServerSelect) {
   consultantServerSelect.addEventListener("change", onServerChanged);
+}
+
+if (consultantToggleDetails) {
+  consultantToggleDetails.addEventListener("click", onToggleDetailsClick);
 }
 
 initConsultantPage();
@@ -97,9 +103,7 @@ function onServerChanged() {
   if (consultantResult) {
     consultantResult.hidden = true;
   }
-  if (consultantMatches) {
-    consultantMatches.innerHTML = "";
-  }
+  resetConsultantDetails();
 
   const serverId = String(consultantServerSelect?.value || "").trim();
   if (!serverId) {
@@ -179,15 +183,13 @@ function onConsultantClear() {
   if (consultantResult) {
     consultantResult.hidden = true;
   }
-  if (consultantMatches) {
-    consultantMatches.innerHTML = "";
-  }
+  resetConsultantDetails();
 }
 
 function renderConsultantResult(payload) {
   if (!consultantResult || !consultantAnswer || !consultantNotice || !consultantMatches) return;
 
-  consultantAnswer.textContent = payload.answer || "Совпадения не найдены.";
+  consultantAnswer.textContent = formatConsultantShortAnswer(payload.answer);
   consultantNotice.textContent =
     payload.notice || "Сервис дает справочные ответы и не заменяет юридическую консультацию.";
 
@@ -209,7 +211,48 @@ function renderConsultantResult(payload) {
     consultantMatches.appendChild(card);
   });
 
+  if (consultantDetails) {
+    consultantDetails.hidden = true;
+  }
+  if (consultantToggleDetails) {
+    consultantToggleDetails.hidden = matches.length === 0;
+    consultantToggleDetails.textContent = "Показать обоснование";
+  }
+
   consultantResult.hidden = false;
+}
+
+function onToggleDetailsClick() {
+  if (!consultantDetails || !consultantToggleDetails) return;
+  const willShow = consultantDetails.hidden;
+  consultantDetails.hidden = !willShow;
+  consultantToggleDetails.textContent = willShow
+    ? "Скрыть обоснование"
+    : "Показать обоснование";
+}
+
+function resetConsultantDetails() {
+  if (consultantMatches) {
+    consultantMatches.innerHTML = "";
+  }
+  if (consultantDetails) {
+    consultantDetails.hidden = true;
+  }
+  if (consultantToggleDetails) {
+    consultantToggleDetails.hidden = true;
+    consultantToggleDetails.textContent = "Показать обоснование";
+  }
+}
+
+function formatConsultantShortAnswer(answer) {
+  const text = String(answer || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!text) {
+    return "Точный фрагмент не найден. Уточните статью, часть или ключевой термин.";
+  }
+  return text;
 }
 
 function setBusy(isBusy) {
