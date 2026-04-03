@@ -165,10 +165,72 @@ const CONSULTANT_STOP_WORDS = new Set([
   "is",
   "are",
 ]);
+const CONSULTANT_QUERY_EXPANSION_MAP = new Map([
+  ["срок", ["период", "дата", "время", "дедлайн", "продление"]],
+  ["заявление", ["обращение", "жалоба", "рапорт", "ходатайство", "запрос"]],
+  ["ответственность", ["наказание", "санкция", "штраф", "взыскание"]],
+  ["нарушение", ["проступок", "правонарушение", "превышение", "нарушать"]],
+  ["задержание", ["арест", "доставление", "заключение"]],
+  ["документ", ["справка", "выписка", "материал", "протокол"]],
+  ["доказательство", ["доказать", "свидетель", "подтверждение", "материал"]],
+  ["порядок", ["процедура", "регламент", "алгоритм"]],
+  ["обжалование", ["апелляция", "жалоба", "оспаривание"]],
+  ["проверка", ["контроль", "инспекция", "рассмотрение"]],
+  ["увольнение", ["отстранение", "исключение", "снятие"]],
+  ["доступ", ["право", "разрешение", "допуск"]],
+]);
+const CONSULTANT_STEM_SUFFIXES = [
+  "иями",
+  "ями",
+  "ами",
+  "иями",
+  "ями",
+  "его",
+  "ого",
+  "ему",
+  "ому",
+  "ыми",
+  "ими",
+  "ией",
+  "ией",
+  "ий",
+  "ый",
+  "ой",
+  "ая",
+  "яя",
+  "ое",
+  "ее",
+  "ые",
+  "ие",
+  "ов",
+  "ев",
+  "ом",
+  "ем",
+  "ам",
+  "ям",
+  "ах",
+  "ях",
+  "ую",
+  "юю",
+  "ия",
+  "ья",
+  "ию",
+  "ью",
+  "а",
+  "я",
+  "ы",
+  "и",
+  "е",
+  "у",
+  "ю",
+  "о",
+];
+const CONSULTANT_INDEX_CACHE_LIMIT = 8;
 
 const sessions = new Map();
 const discordMemberCache = new Map();
 const discordMemberPending = new Map();
+const consultantSemanticIndexCache = new Map();
 let cachedPdfParse = null;
 let cachedMammoth = null;
 let siteSettings = loadSettings();
@@ -1775,83 +1837,43 @@ async function handleConsultantAsk(req, res) {
 }
 
 function buildConsultantResponse(question, lawsText) {
-  const chunks = splitLawTextIntoChunks(lawsText);
-  const keywords = tokenizeConsultantQuery(question);
-  const normalizedQuestion = normalizeConsultantText(question);
-  const hasQuestionPhrase = normalizedQuestion.length >= 8;
+  const semanticIndex = getConsultantSemanticIndex(lawsText);
+  const questionProfile = buildConsultantQuestionProfile(question, semanticIndex.idfMap);
+  const ranked = rankConsultantFragments(semanticIndex.fragments, questionProfile, semanticIndex.idfMap)
+    .filter((entry) => entry.score > 0.2)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
 
-  const ranked = chunks
-    .map((chunk, index) => {
-      const normalizedChunk = normalizeConsultantText(chunk.text);
-      let score = 0;
-      const matchedKeywords = [];
-
-      keywords.forEach((keyword) => {
-        if (!normalizedChunk.includes(keyword)) {
-          return;
-        }
-
-        matchedKeywords.push(keyword);
-        score += 2 + Math.min(4, Math.floor(keyword.length / 3));
-      });
-
-      for (let i = 0; i < keywords.length - 1; i += 1) {
-        const phrase = `${keywords[i]} ${keywords[i + 1]}`;
-        if (phrase.length > 7 && normalizedChunk.includes(phrase)) {
-          score += 4;
-        }
-      }
-
-      if (hasQuestionPhrase && normalizedChunk.includes(normalizedQuestion)) {
-        score += 12;
-      }
-
-      if (/стат(ья|ьи|ей|ью)/i.test(question) && /стат(ья|ьи|ей|ью)/i.test(chunk.text)) {
-        score += 2;
-      }
-
-      return {
-        index,
-        score,
-        title: chunk.title || `Фрагмент ${index + 1}`,
-        text: chunk.text,
-        keywords: Array.from(new Set(matchedKeywords)).slice(0, 8),
-      };
-    })
-    .filter((entry) => entry.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index)
-    .slice(0, 3);
-
-  if (!ranked.length) {
+  if (!ranked.length || !questionProfile.tokens.length) {
     return {
       question,
       answer:
-        "В загруженных текстах не найдено прямого совпадения по формулировке вопроса. " +
-        "Уточните ключевые слова (например: статья, срок, ответственность, порядок).",
+        "Я проанализировал всю загруженную базу, но не нашёл уверенной опоры для ответа. " +
+        "Уточните формулировку (например: статья, срок, ответственность, порядок действий).",
       matches: [],
       notice:
-        "Ответ формируется только по материалам, добавленным в админ-панели, и носит справочный характер.",
+        "Анализ выполняется по всей базе документов сервера и носит справочный характер.",
     };
   }
 
-  const matches = ranked.map((entry, idx) => ({
-    title: entry.title || `Фрагмент ${idx + 1}`,
-    excerpt: buildConsultantExcerpt(entry.text, entry.keywords, 460),
-    keywords: entry.keywords,
-  }));
-
-  const answerBody = matches
-    .map((match, idx) => `${idx + 1}. ${match.excerpt}`)
-    .join("\n\n");
+  const topMatches = ranked.slice(0, 4);
+  const matches = topMatches.map((entry, idx) => {
+    const evidence = getBestEvidenceSentences(entry, questionProfile, 2);
+    const evidenceText = evidence.map((line) => line.text).join(" ");
+    return {
+      title: entry.title || `Фрагмент ${idx + 1}`,
+      excerpt: buildConsultantExcerpt(evidenceText || entry.text, questionProfile.tokens, 520),
+      keywords: entry.matchedKeywords.slice(0, 10),
+      score: Number(entry.score.toFixed(3)),
+    };
+  });
+  const answer = composeConsultantAnswer(question, matches, ranked.length);
 
   return {
     question,
-    answer:
-      `По вашему запросу найдены релевантные фрагменты:\n\n${answerBody}\n\n` +
-      "Проверьте оригинальную формулировку нормы перед применением.",
+    answer,
     matches,
     notice:
-      "Ответ формируется только по материалам, добавленным в админ-панели, и не заменяет юридическую консультацию.",
+      "Ответ формируется динамически по всей загруженной базе документов и не заменяет юридическую консультацию.",
   };
 }
 
@@ -1869,6 +1891,7 @@ function splitLawTextIntoChunks(rawText) {
     .map((chunk) => chunk.trim())
     .filter(Boolean);
   const chunks = [];
+  let currentSource = "";
 
   blocks.forEach((block) => {
     const lines = block
@@ -1879,11 +1902,20 @@ function splitLawTextIntoChunks(rawText) {
       return;
     }
 
+    const sourceLine = lines.find((line) => /^\[источник:/i.test(line));
+    if (sourceLine) {
+      currentSource = sourceLine
+        .replace(/^\[/, "")
+        .replace(/\]$/, "")
+        .trim();
+    }
+
     const titleCandidate =
       lines.find((line) =>
         /^(статья|глава|раздел|часть|пункт|article|chapter)\b/i.test(line)
       ) || lines[0];
-    const title = String(titleCandidate || "").slice(0, 120);
+    const titlePrefix = currentSource ? `${currentSource} — ` : "";
+    const title = `${titlePrefix}${String(titleCandidate || "").slice(0, 120)}`.trim();
     const compact = lines.join(" ").replace(/\s+/g, " ").trim();
     if (!compact) {
       return;
@@ -1931,16 +1963,308 @@ function normalizeConsultantText(value) {
     .trim();
 }
 
-function tokenizeConsultantQuery(question) {
-  const tokens = normalizeConsultantText(question).match(/[a-zа-я0-9]{2,}/g) || [];
-  const unique = [];
+function normalizeConsultantToken(token) {
+  let normalized = String(token || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9]/g, "");
+  if (!normalized || normalized.length < 2) {
+    return "";
+  }
+
+  for (const suffix of CONSULTANT_STEM_SUFFIXES) {
+    if (normalized.length > suffix.length + 2 && normalized.endsWith(suffix)) {
+      normalized = normalized.slice(0, -suffix.length);
+      break;
+    }
+  }
+  return normalized;
+}
+
+function tokenizeConsultantText(value, { dropStopWords = true } = {}) {
+  const tokens = normalizeConsultantText(value).match(/[a-zа-я0-9]{2,}/g) || [];
+  const result = [];
   tokens.forEach((token) => {
-    if (token.length < 2 || CONSULTANT_STOP_WORDS.has(token) || unique.includes(token)) {
+    const normalized = normalizeConsultantToken(token);
+    if (!normalized) {
       return;
     }
-    unique.push(token);
+    if (dropStopWords && CONSULTANT_STOP_WORDS.has(normalized)) {
+      return;
+    }
+    result.push(normalized);
   });
-  return unique.slice(0, 24);
+  return result;
+}
+
+function buildConsultantQuestionProfile(question, idfMap) {
+  const baseTokens = Array.from(new Set(tokenizeConsultantText(question))).slice(0, 40);
+  const expanded = new Set(baseTokens);
+  baseTokens.forEach((token) => {
+    const variants = CONSULTANT_QUERY_EXPANSION_MAP.get(token) || [];
+    variants.forEach((variant) => {
+      const normalized = normalizeConsultantToken(variant);
+      if (normalized) expanded.add(normalized);
+    });
+  });
+
+  const tokenWeights = new Map();
+  baseTokens.forEach((token) => {
+    const idfBoost = Number(idfMap?.get(token) || 1);
+    tokenWeights.set(token, 1.5 + Math.min(1.6, idfBoost * 0.25));
+  });
+  expanded.forEach((token) => {
+    if (!tokenWeights.has(token)) {
+      tokenWeights.set(token, 0.9 + Math.min(1.2, Number(idfMap?.get(token) || 1) * 0.15));
+    }
+  });
+
+  const phraseTokens = tokenizeConsultantText(question, { dropStopWords: false });
+  const phrases = [];
+  for (let i = 0; i < phraseTokens.length - 1; i += 1) {
+    const phrase = `${phraseTokens[i]} ${phraseTokens[i + 1]}`;
+    if (phrase.length > 4) {
+      phrases.push(phrase);
+    }
+  }
+
+  return {
+    tokens: baseTokens,
+    expandedTokens: Array.from(expanded),
+    tokenWeights,
+    phrases: Array.from(new Set(phrases)).slice(0, 18),
+  };
+}
+
+function getConsultantSemanticIndex(lawsText) {
+  const normalized = normalizeExtractedLawText(lawsText);
+  const hash = crypto.createHash("sha1").update(normalized).digest("hex");
+  const cached = consultantSemanticIndexCache.get(hash);
+  if (cached) {
+    consultantSemanticIndexCache.delete(hash);
+    consultantSemanticIndexCache.set(hash, cached);
+    return cached;
+  }
+
+  const rawFragments = splitLawTextIntoChunks(normalized);
+  const fragments = rawFragments
+    .map((fragment, index) => {
+      const text = String(fragment?.text || "").trim();
+      if (!text) return null;
+      const tokenList = tokenizeConsultantText(text);
+      const tokenFreq = new Map();
+      tokenList.forEach((token) => {
+        tokenFreq.set(token, (tokenFreq.get(token) || 0) + 1);
+      });
+      const tokenSet = new Set(tokenFreq.keys());
+      return {
+        index,
+        title: String(fragment?.title || `Фрагмент ${index + 1}`),
+        text,
+        normalizedText: normalizeConsultantText(text),
+        titleNormalized: normalizeConsultantText(fragment?.title || ""),
+        tokenFreq,
+        tokenSet,
+        sentences: splitConsultantSentences(text),
+      };
+    })
+    .filter(Boolean);
+
+  const dfMap = new Map();
+  fragments.forEach((fragment) => {
+    fragment.tokenSet.forEach((token) => {
+      dfMap.set(token, (dfMap.get(token) || 0) + 1);
+    });
+  });
+
+  const totalDocs = Math.max(1, fragments.length);
+  const idfMap = new Map();
+  dfMap.forEach((df, token) => {
+    const idf = Math.log((totalDocs + 1) / (df + 0.5)) + 1;
+    idfMap.set(token, Number.isFinite(idf) ? idf : 1);
+  });
+
+  const index = {
+    hash,
+    fragments,
+    idfMap,
+  };
+  consultantSemanticIndexCache.set(hash, index);
+  while (consultantSemanticIndexCache.size > CONSULTANT_INDEX_CACHE_LIMIT) {
+    const firstKey = consultantSemanticIndexCache.keys().next().value;
+    consultantSemanticIndexCache.delete(firstKey);
+  }
+  return index;
+}
+
+function rankConsultantFragments(fragments, profile, idfMap) {
+  const ranked = [];
+  fragments.forEach((fragment) => {
+    let score = 0;
+    let exactHits = 0;
+    const matchedKeywords = [];
+
+    profile.tokenWeights.forEach((weight, token) => {
+      const freq = fragment.tokenFreq.get(token) || 0;
+      if (freq > 0) {
+        const idf = Number(idfMap.get(token) || 1);
+        score += weight * (1 + Math.log(1 + freq)) * idf;
+        exactHits += 1;
+        matchedKeywords.push(token);
+      } else {
+        const approx = findConsultantApproximateToken(token, fragment.tokenSet);
+        if (approx.similarity > 0.82) {
+          score += weight * approx.similarity * 0.45;
+          matchedKeywords.push(approx.token);
+        }
+      }
+    });
+
+    profile.phrases.forEach((phrase) => {
+      if (fragment.normalizedText.includes(phrase)) {
+        score += 2.8;
+      }
+      if (fragment.titleNormalized.includes(phrase)) {
+        score += 1.6;
+      }
+    });
+
+    matchedKeywords.forEach((token) => {
+      if (fragment.titleNormalized.includes(token)) {
+        score += 1.2;
+      }
+    });
+
+    const tokenCoverage =
+      profile.tokens.length > 0 ? Math.min(1, exactHits / profile.tokens.length) : 0;
+    score *= 0.65 + tokenCoverage;
+    if (tokenCoverage > 0.65) {
+      score += 1.4;
+    }
+
+    const lengthPenalty = 1 + Math.log(1 + fragment.text.length / 1100);
+    const normalizedScore = score / lengthPenalty;
+    ranked.push({
+      ...fragment,
+      score: normalizedScore,
+      matchedKeywords: Array.from(new Set(matchedKeywords)),
+    });
+  });
+  return ranked;
+}
+
+function findConsultantApproximateToken(token, tokenSet) {
+  const source = String(token || "");
+  if (!source) {
+    return { token: "", similarity: 0 };
+  }
+
+  let bestToken = "";
+  let best = 0;
+  tokenSet.forEach((candidate) => {
+    if (!candidate) return;
+    if (candidate[0] !== source[0]) return;
+    const similarity = consultantTokenSimilarity(source, candidate);
+    if (similarity > best) {
+      best = similarity;
+      bestToken = candidate;
+    }
+  });
+  return { token: bestToken, similarity: best };
+}
+
+function consultantTokenSimilarity(a, b) {
+  const left = String(a || "");
+  const right = String(b || "");
+  if (!left || !right) return 0;
+  if (left === right) return 1;
+  if (left.length < 3 || right.length < 3) return left === right ? 1 : 0;
+
+  const minLen = Math.min(left.length, right.length);
+  let prefix = 0;
+  while (prefix < minLen && left[prefix] === right[prefix]) {
+    prefix += 1;
+  }
+  const prefixScore = prefix / Math.max(left.length, right.length);
+
+  const leftTrigrams = buildTokenNGrams(left, 3);
+  const rightTrigrams = buildTokenNGrams(right, 3);
+  const intersection = leftTrigrams.filter((gram) => rightTrigrams.includes(gram)).length;
+  const union = new Set([...leftTrigrams, ...rightTrigrams]).size || 1;
+  const jaccard = intersection / union;
+  return (prefixScore * 0.55) + (jaccard * 0.45);
+}
+
+function buildTokenNGrams(token, size = 3) {
+  const clean = String(token || "");
+  if (clean.length <= size) return [clean];
+  const grams = [];
+  for (let i = 0; i <= clean.length - size; i += 1) {
+    grams.push(clean.slice(i, i + size));
+  }
+  return grams;
+}
+
+function splitConsultantSentences(text) {
+  return String(text || "")
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 120);
+}
+
+function getBestEvidenceSentences(fragment, profile, limit = 2) {
+  const sentences = Array.isArray(fragment.sentences) ? fragment.sentences : [];
+  if (!sentences.length) {
+    return [{ text: fragment.text, score: 0 }];
+  }
+
+  const scored = sentences.map((sentence) => {
+    const normalized = normalizeConsultantText(sentence);
+    let score = 0;
+    profile.tokenWeights.forEach((weight, token) => {
+      if (normalized.includes(token)) {
+        score += weight;
+      }
+    });
+    profile.phrases.forEach((phrase) => {
+      if (normalized.includes(phrase)) {
+        score += 1.8;
+      }
+    });
+    return { text: sentence, score };
+  });
+
+  const best = scored
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(1, limit))
+    .filter((entry) => entry.score > 0);
+  return best.length ? best : scored.slice(0, 1);
+}
+
+function composeConsultantAnswer(question, matches, totalMatches) {
+  const intro =
+    "Я проанализировал весь загруженный массив норм и выбрал наиболее релевантные фрагменты.";
+  const topCount = Math.min(matches.length, 3);
+  const lines = matches
+    .slice(0, topCount)
+    .map((match, index) => `${index + 1}. ${match.title}: ${match.excerpt}`);
+  const confidenceHint =
+    totalMatches > 6
+      ? "Найдено много совпадений, поэтому я показал самые сильные по смыслу."
+      : "Совпадений немного, поэтому формулировку лучше дополнительно уточнить по статье/пункту.";
+
+  return [
+    intro,
+    "",
+    `По вопросу: ${question}`,
+    "",
+    "Что найдено по базе:",
+    ...lines,
+    "",
+    confidenceHint,
+    "Перед применением обязательно сверяйте полный текст нормы и исключения.",
+  ].join("\n");
 }
 
 function buildConsultantExcerpt(text, keywords = [], maxLength = 460) {
