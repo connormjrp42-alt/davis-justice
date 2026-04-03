@@ -1903,8 +1903,6 @@ function splitLawTextIntoChunks(rawText) {
     .map((chunk) => chunk.trim())
     .filter(Boolean);
   const chunks = [];
-  let currentSource = "";
-
   blocks.forEach((block) => {
     const lines = block
       .split("\n")
@@ -1914,21 +1912,17 @@ function splitLawTextIntoChunks(rawText) {
       return;
     }
 
-    const sourceLine = lines.find((line) => /^\[источник:/i.test(line));
-    if (sourceLine) {
-      currentSource = sourceLine
-        .replace(/^\[/, "")
-        .replace(/\]$/, "")
-        .trim();
+    const cleanedLines = lines.filter((line) => !/^\[(источник|source)\s*:/i.test(line));
+    if (!cleanedLines.length) {
+      return;
     }
 
     const titleCandidate =
-      lines.find((line) =>
+      cleanedLines.find((line) =>
         /^(статья|глава|раздел|часть|пункт|article|chapter)\b/i.test(line)
-      ) || lines[0];
-    const titlePrefix = currentSource ? `${currentSource} — ` : "";
-    const title = `${titlePrefix}${String(titleCandidate || "").slice(0, 120)}`.trim();
-    const compact = lines.join(" ").replace(/\s+/g, " ").trim();
+      ) || cleanedLines[0];
+    const title = String(titleCandidate || "").slice(0, 120).trim();
+    const compact = cleanedLines.join(" ").replace(/\s+/g, " ").trim();
     if (!compact) {
       return;
     }
@@ -2045,7 +2039,27 @@ function buildConsultantQuestionProfile(question, idfMap) {
     expandedTokens: Array.from(expanded),
     tokenWeights,
     phrases: Array.from(new Set(phrases)).slice(0, 18),
+    articleRefs: extractArticleReferences(question),
   };
+}
+
+function extractArticleReferences(text) {
+  const source = String(text || "")
+    .replace(/[,;]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) {
+    return [];
+  }
+  const matches = source.match(/\b\d{1,2}(?:\.\d{1,3})?(?:\s*(?:ч|част|часть)\s*\d+)?\b/gi) || [];
+  return Array.from(
+    new Set(
+      matches
+        .map((item) => normalizeConsultantText(item))
+        .map((item) => item.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 8);
 }
 
 function getConsultantSemanticIndex(lawsText) {
@@ -2154,12 +2168,24 @@ function rankConsultantFragments(fragments, profile, idfMap) {
       score += 1.4;
     }
 
+    const normalizedText = fragment.normalizedText || "";
+    const refs = Array.isArray(profile.articleRefs) ? profile.articleRefs : [];
+    const refsMatched = refs.filter((ref) => normalizedText.includes(ref));
+    if (refs.length > 0) {
+      if (!refsMatched.length) {
+        score *= 0.18;
+      } else {
+        score += 6 + refsMatched.length * 2.5;
+      }
+    }
+
     const lengthPenalty = 1 + Math.log(1 + fragment.text.length / 1100);
     const normalizedScore = score / lengthPenalty;
     ranked.push({
       ...fragment,
       score: normalizedScore,
       matchedKeywords: Array.from(new Set(matchedKeywords)),
+      articleRefsMatched: refsMatched,
     });
   });
   return ranked;
@@ -2255,28 +2281,19 @@ function getBestEvidenceSentences(fragment, profile, limit = 2) {
 }
 
 function composeConsultantAnswer(question, matches, totalMatches) {
-  const intro =
-    "Я проанализировал весь загруженный массив норм и выбрал наиболее релевантные фрагменты.";
-  const topCount = Math.min(matches.length, 3);
-  const lines = matches
-    .slice(0, topCount)
-    .map((match, index) => `${index + 1}. ${match.title}: ${match.excerpt}`);
+  const best = matches[0];
+  const body = best?.excerpt || "";
+  const compactBody = body.length > 420 ? `${body.slice(0, 420).trim()}...` : body;
   const confidenceHint =
-    totalMatches > 6
-      ? "Найдено много совпадений, поэтому я показал самые сильные по смыслу."
-      : "Совпадений немного, поэтому формулировку лучше дополнительно уточнить по статье/пункту.";
+    totalMatches > 8
+      ? "Нашлось много близких норм, поэтому выделена самая релевантная формулировка."
+      : "Рекомендую сверить формулировку с полным текстом статьи и примечаниями.";
 
   return [
-    intro,
-    "",
-    `По вопросу: ${question}`,
-    "",
-    "Что найдено по базе:",
-    ...lines,
-    "",
+    `Кратко по запросу «${question}»:`,
+    compactBody || "Точного фрагмента не найдено, уточните номер статьи/части.",
     confidenceHint,
-    "Перед применением обязательно сверяйте полный текст нормы и исключения.",
-  ].join("\n");
+  ].join("\n\n");
 }
 
 async function generateConsultantAnswerWithOllama(question, matches) {
@@ -2583,9 +2600,7 @@ async function handleAdminConsultantUpload(req, res) {
         continue;
       }
       const uploadedAt = new Date().toISOString();
-      appendBlocks.push(
-        `[Источник: ${file.filename}; дата: ${uploadedAt}]\n${text.trim()}`
-      );
+      appendBlocks.push(text.trim());
       appendedMeta.push({
         id: `f_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`,
         name: file.filename,
@@ -3348,7 +3363,9 @@ function parseMultipartFormData(req, maxBytes = Number.POSITIVE_INFINITY) {
         }
 
         if (filenameMatch) {
-          const originalName = sanitizeUploadFileName(filenameMatch[1] || "");
+          const originalName = sanitizeUploadFileName(
+            decodeMultipartLatin1ToUtf8(filenameMatch[1] || "")
+          );
           if (!originalName) {
             continue;
           }
@@ -3378,6 +3395,18 @@ function parseMultipartFormData(req, maxBytes = Number.POSITIVE_INFINITY) {
 function sanitizeUploadFileName(value) {
   const baseName = path.basename(String(value || "").trim());
   return baseName.replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_").slice(0, 220);
+}
+
+function decodeMultipartLatin1ToUtf8(value) {
+  const source = String(value || "");
+  if (!source) {
+    return "";
+  }
+  const decoded = Buffer.from(source, "latin1").toString("utf-8").trim();
+  if (!decoded) {
+    return source.trim();
+  }
+  return /Ð|Ñ|Ã|Â/.test(source) ? decoded : source.trim();
 }
 
 async function extractConsultantTextFromFile(file) {
