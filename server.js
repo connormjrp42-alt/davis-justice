@@ -1845,11 +1845,33 @@ async function handleConsultantAsk(req, res) {
 async function buildConsultantResponse(question, lawsText) {
   const semanticIndex = getConsultantSemanticIndex(lawsText);
   const questionProfile = buildConsultantQuestionProfile(question, semanticIndex.idfMap);
-  const ranked = rankConsultantFragments(semanticIndex.fragments, questionProfile, semanticIndex.idfMap)
+  let ranked = rankConsultantFragments(semanticIndex.fragments, questionProfile, semanticIndex.idfMap)
     .filter((entry) => entry.score > 0.2)
     .sort((a, b) => b.score - a.score || a.index - b.index);
 
-  if (!ranked.length || !questionProfile.tokens.length) {
+  const hasExplicitArticleRefs = Array.isArray(questionProfile.articleRefs)
+    && questionProfile.articleRefs.length > 0;
+  if (hasExplicitArticleRefs) {
+    ranked = ranked.filter(
+      (entry) => Array.isArray(entry.articleRefsMatched) && entry.articleRefsMatched.length > 0
+    );
+    if (!ranked.length) {
+      const refsText = questionProfile.articleRefs.join(", ");
+      return {
+        question,
+        answer:
+          `По запросу «${question}» я не нашёл точного совпадения статьи (${refsText}) ` +
+          "в загруженной базе этого сервера.",
+        matches: [],
+        notice:
+          "Проверьте номер статьи/части или загрузите актуальную редакцию законодательства для выбранного сервера.",
+      };
+    }
+  }
+
+  ranked = dedupeConsultantRankedResults(ranked);
+
+  if (!ranked.length || (!questionProfile.tokens.length && !hasExplicitArticleRefs)) {
     return {
       question,
       answer:
@@ -1861,6 +1883,7 @@ async function buildConsultantResponse(question, lawsText) {
     };
   }
 
+  const confident = isConsultantRankingConfident(ranked, questionProfile);
   const topMatches = ranked.slice(0, 4);
   const matches = topMatches.map((entry, idx) => {
     const evidence = getBestEvidenceSentences(entry, questionProfile, 2);
@@ -1872,9 +1895,21 @@ async function buildConsultantResponse(question, lawsText) {
       score: Number(entry.score.toFixed(3)),
     };
   });
+  if (!confident) {
+    return {
+      question,
+      answer:
+        "Найдено несколько близких норм, но без достаточной точности для уверенного вывода. " +
+        "Уточните запрос (статья, часть, контекст нарушения).",
+      matches: matches.slice(0, 2),
+      notice:
+        "Чтобы избежать ошибки, консультант не формирует категоричный ответ при низкой уверенности.",
+    };
+  }
+
   let answer = composeConsultantAnswer(question, matches, ranked.length);
   if (CONSULTANT_USE_OLLAMA) {
-    const aiAnswer = await generateConsultantAnswerWithOllama(question, matches);
+    const aiAnswer = await generateConsultantAnswerWithOllama(question, matches, questionProfile);
     if (aiAnswer) {
       answer = aiAnswer;
     }
@@ -1887,6 +1922,56 @@ async function buildConsultantResponse(question, lawsText) {
     notice:
       "Ответ формируется динамически по всей загруженной базе документов и не заменяет юридическую консультацию.",
   };
+}
+
+function dedupeConsultantRankedResults(entries) {
+  const seen = new Set();
+  const unique = [];
+  (Array.isArray(entries) ? entries : []).forEach((entry) => {
+    const signature = normalizeConsultantText(
+      `${entry?.title || ""} ${entry?.text || ""}`
+    ).slice(0, 260);
+    if (!signature || seen.has(signature)) {
+      return;
+    }
+    seen.add(signature);
+    unique.push(entry);
+  });
+  return unique;
+}
+
+function isConsultantRankingConfident(ranked, profile) {
+  if (!Array.isArray(ranked) || !ranked.length) {
+    return false;
+  }
+
+  const top = ranked[0];
+  const second = ranked[1];
+  const hasRefs = Array.isArray(profile?.articleRefs) && profile.articleRefs.length > 0;
+  const topScore = Number(top?.score || 0);
+  if (hasRefs && (!Array.isArray(top?.articleRefsMatched) || !top.articleRefsMatched.length)) {
+    return false;
+  }
+
+  if (topScore < (hasRefs ? 1.05 : 0.5)) {
+    return false;
+  }
+
+  if (hasRefs) {
+    return true;
+  }
+
+  if (!second) {
+    return true;
+  }
+
+  const secondScore = Number(second?.score || 0);
+  if (secondScore <= 0) {
+    return true;
+  }
+  const ratio = topScore / secondScore;
+  const margin = topScore - secondScore;
+  return ratio >= 1.03 || margin >= 0.05;
 }
 
 function splitLawTextIntoChunks(rawText) {
@@ -2051,7 +2136,8 @@ function extractArticleReferences(text) {
   if (!source) {
     return [];
   }
-  const matches = source.match(/\b\d{1,2}(?:\.\d{1,3})?(?:\s*(?:ч|част|часть)\s*\d+)?\b/gi) || [];
+  const matches =
+    source.match(/\b\d{1,2}(?:\.\d{1,3})?(?:\s*(?:ч|част|часть)\.?\s*\d+)?\b/gi) || [];
   return Array.from(
     new Set(
       matches
@@ -2111,7 +2197,7 @@ function getConsultantSemanticIndex(lawsText) {
         text,
         normalizedText: normalizeConsultantText(text),
         titleNormalized: normalizeConsultantText(fragment?.title || ""),
-        articleRefs: extractArticleReferences(text),
+        articleRefs: extractArticleReferences(`${fragment?.title || ""}\n${text}`),
         tokenFreq,
         tokenSet,
         sentences: splitConsultantSentences(text),
@@ -2170,10 +2256,10 @@ function rankConsultantFragments(fragments, profile, idfMap) {
     });
 
     profile.phrases.forEach((phrase) => {
-      if (fragment.normalizedText.includes(phrase)) {
+      if (containsConsultantNormalizedPhrase(fragment.normalizedText, phrase)) {
         score += 2.8;
       }
-      if (fragment.titleNormalized.includes(phrase)) {
+      if (containsConsultantNormalizedPhrase(fragment.titleNormalized, phrase)) {
         score += 1.6;
       }
     });
@@ -2272,6 +2358,24 @@ function buildTokenNGrams(token, size = 3) {
   return grams;
 }
 
+function containsConsultantNormalizedPhrase(text, phrase) {
+  const source = String(text || "");
+  const needle = String(phrase || "").trim();
+  if (!source || !needle) {
+    return false;
+  }
+  if (!/[0-9]/.test(needle)) {
+    return source.includes(needle);
+  }
+  const escaped = escapeRegExp(needle).replace(/\s+/g, "\\s+");
+  const pattern = new RegExp(`(^|\\s)${escaped}(?=\\s|$)`, "i");
+  return pattern.test(source);
+}
+
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function splitConsultantSentences(text) {
   return String(text || "")
     .split(/(?<=[.!?])\s+|\n+/)
@@ -2286,6 +2390,14 @@ function getBestEvidenceSentences(fragment, profile, limit = 2) {
     return [{ text: fragment.text, score: 0 }];
   }
 
+  const questionRefs = Array.from(
+    new Set(
+      (Array.isArray(profile?.articleRefs) ? profile.articleRefs : [])
+        .map((entry) => normalizeArticleReference(entry))
+        .filter(Boolean)
+    )
+  );
+
   const scored = sentences.map((sentence) => {
     const normalized = normalizeConsultantText(sentence);
     let score = 0;
@@ -2295,15 +2407,33 @@ function getBestEvidenceSentences(fragment, profile, limit = 2) {
       }
     });
     profile.phrases.forEach((phrase) => {
-      if (normalized.includes(phrase)) {
+      if (containsConsultantNormalizedPhrase(normalized, phrase)) {
         score += 1.8;
       }
     });
-    return { text: sentence, score };
+    const sentenceRefs = extractArticleReferences(sentence);
+    const hasExactRef =
+      questionRefs.length > 0
+        ? sentenceRefs.some((ref) => questionRefs.includes(normalizeArticleReference(ref)))
+        : false;
+    if (questionRefs.length > 0) {
+      score += hasExactRef ? 7.5 : -1.25;
+    }
+    return { text: sentence, score, hasExactRef };
   });
 
-  const best = scored
-    .sort((a, b) => b.score - a.score)
+  const sorted = scored.sort((a, b) => b.score - a.score);
+  if (questionRefs.length > 0) {
+    const exact = sorted
+      .filter((entry) => entry.hasExactRef)
+      .slice(0, Math.max(1, limit))
+      .filter((entry) => entry.score > 0);
+    if (exact.length) {
+      return exact;
+    }
+  }
+
+  const best = sorted
     .slice(0, Math.max(1, limit))
     .filter((entry) => entry.score > 0);
   return best.length ? best : scored.slice(0, 1);
@@ -2325,7 +2455,7 @@ function composeConsultantAnswer(question, matches, totalMatches) {
   ].join("\n\n");
 }
 
-async function generateConsultantAnswerWithOllama(question, matches) {
+async function generateConsultantAnswerWithOllama(question, matches, profile = null) {
   if (!CONSULTANT_USE_OLLAMA || !Array.isArray(matches) || !matches.length) {
     return "";
   }
@@ -2342,12 +2472,22 @@ async function generateConsultantAnswerWithOllama(question, matches) {
     if (!context) {
       return "";
     }
+    const articleRefs = Array.from(
+      new Set(
+        (Array.isArray(profile?.articleRefs) ? profile.articleRefs : [])
+          .map((entry) => normalizeArticleReference(entry))
+          .filter(Boolean)
+      )
+    );
 
     const prompt = [
       "Ты юридический ассистент проекта Davis Justice.",
       "Отвечай ТОЛЬКО по контексту ниже. Ничего не выдумывай.",
       "Если данных недостаточно, прямо напиши: 'В предоставленных материалах нет достаточного основания для точного ответа.'",
       "Ответ должен быть короткий, структурированный и понятный.",
+      articleRefs.length
+        ? `В вопросе указаны конкретные статьи: ${articleRefs.join(", ")}. Не подменяй их похожими номерами.`
+        : "Если в материалах несколько похожих норм, выбери только самую точную.",
       "Формат:",
       "1) Краткий вывод",
       "2) Основание из материалов",
