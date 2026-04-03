@@ -43,6 +43,12 @@ const FACTION_STATE_PATH = path.join(DATA_DIR, "faction-state.json");
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
 const CONSULTANT_MAX_FILES_PER_UPLOAD = Number(process.env.CONSULTANT_MAX_FILES_PER_UPLOAD || 8);
 const CONSULTANT_MAX_FILES_PER_SERVER = Number(process.env.CONSULTANT_MAX_FILES_PER_SERVER || 60);
+const CONSULTANT_USE_OLLAMA = String(process.env.CONSULTANT_USE_OLLAMA || "false")
+  .trim()
+  .toLowerCase() === "true";
+const OLLAMA_BASE_URL = String(process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434").trim();
+const OLLAMA_MODEL = String(process.env.OLLAMA_MODEL || "qwen2.5:7b-instruct").trim();
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 20_000);
 const MAX_IMAGE_DATA_URL_CHARS = Number(
   process.env.MAX_IMAGE_DATA_URL_CHARS || 3_200_000
 );
@@ -1822,7 +1828,7 @@ async function handleConsultantAsk(req, res) {
       });
     }
 
-    const result = buildConsultantResponse(question, lawsText);
+    const result = await buildConsultantResponse(question, lawsText);
     return sendJson(res, 200, {
       ok: true,
       server: {
@@ -1836,7 +1842,7 @@ async function handleConsultantAsk(req, res) {
   }
 }
 
-function buildConsultantResponse(question, lawsText) {
+async function buildConsultantResponse(question, lawsText) {
   const semanticIndex = getConsultantSemanticIndex(lawsText);
   const questionProfile = buildConsultantQuestionProfile(question, semanticIndex.idfMap);
   const ranked = rankConsultantFragments(semanticIndex.fragments, questionProfile, semanticIndex.idfMap)
@@ -1866,7 +1872,13 @@ function buildConsultantResponse(question, lawsText) {
       score: Number(entry.score.toFixed(3)),
     };
   });
-  const answer = composeConsultantAnswer(question, matches, ranked.length);
+  let answer = composeConsultantAnswer(question, matches, ranked.length);
+  if (CONSULTANT_USE_OLLAMA) {
+    const aiAnswer = await generateConsultantAnswerWithOllama(question, matches);
+    if (aiAnswer) {
+      answer = aiAnswer;
+    }
+  }
 
   return {
     question,
@@ -2265,6 +2277,97 @@ function composeConsultantAnswer(question, matches, totalMatches) {
     confidenceHint,
     "Перед применением обязательно сверяйте полный текст нормы и исключения.",
   ].join("\n");
+}
+
+async function generateConsultantAnswerWithOllama(question, matches) {
+  if (!CONSULTANT_USE_OLLAMA || !Array.isArray(matches) || !matches.length) {
+    return "";
+  }
+
+  try {
+    const context = matches
+      .slice(0, 4)
+      .map((match, index) => {
+        const title = String(match?.title || `Фрагмент ${index + 1}`).trim();
+        const excerpt = String(match?.excerpt || "").trim();
+        return `[${index + 1}] ${title}\n${excerpt}`;
+      })
+      .join("\n\n");
+    if (!context) {
+      return "";
+    }
+
+    const prompt = [
+      "Ты юридический ассистент проекта Davis Justice.",
+      "Отвечай ТОЛЬКО по контексту ниже. Ничего не выдумывай.",
+      "Если данных недостаточно, прямо напиши: 'В предоставленных материалах нет достаточного основания для точного ответа.'",
+      "Ответ должен быть короткий, структурированный и понятный.",
+      "Формат:",
+      "1) Краткий вывод",
+      "2) Основание из материалов",
+      "3) Что проверить дополнительно",
+      "",
+      `Вопрос пользователя: ${question}`,
+      "",
+      "Контекст материалов:",
+      context,
+    ].join("\n");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(new Error("Ollama timeout")),
+      Math.max(3_000, OLLAMA_TIMEOUT_MS)
+    );
+
+    const url = new URL("/api/generate", OLLAMA_BASE_URL).toString();
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false,
+        options: {
+          temperature: 0.1,
+          num_predict: 420,
+        },
+      }),
+      signal: controller.signal,
+    }).finally(() => clearTimeout(timeout));
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      console.error("Ollama generate failed:", response.status, text);
+      return "";
+    }
+
+    const payload = await response.json();
+    const rawText = String(payload?.response || "").trim();
+    if (!rawText) {
+      return "";
+    }
+
+    return sanitizeConsultantAiAnswer(rawText);
+  } catch (error) {
+    console.error("Ollama answer generation error:", error);
+    return "";
+  }
+}
+
+function sanitizeConsultantAiAnswer(text) {
+  const cleaned = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim();
+  if (!cleaned) {
+    return "";
+  }
+  if (cleaned.length <= 2200) {
+    return cleaned;
+  }
+  return `${cleaned.slice(0, 2200).trim()}\n\n(Ответ сокращён)`;
 }
 
 function buildConsultantExcerpt(text, keywords = [], maxLength = 460) {
