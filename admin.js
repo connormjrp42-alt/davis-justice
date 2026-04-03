@@ -5,6 +5,8 @@ const reloadButton = document.getElementById("reload-settings");
 const announcementEnabled = document.getElementById("announcement-enabled");
 const announcementTitle = document.getElementById("announcement-title");
 const announcementText = document.getElementById("announcement-text");
+const consultantEnabled = document.getElementById("consultant-enabled");
+const consultantLawsText = document.getElementById("consultant-laws-text");
 
 const leadersStatus = document.getElementById("leaders-status");
 const leadersForm = document.getElementById("leaders-form");
@@ -107,10 +109,13 @@ async function loadAdminSettings() {
 
     const payload = await response.json();
     const announcement = payload.announcement || {};
+    const consultant = payload.consultant || {};
 
     announcementEnabled.checked = Boolean(announcement.enabled);
     announcementTitle.value = announcement.title || "";
     announcementText.value = announcement.text || "";
+    consultantEnabled.checked = Boolean(consultant.enabled);
+    consultantLawsText.value = consultant.lawsText || "";
   } catch (error) {
     console.error("Load admin settings error:", error);
     setMessage("Не удалось загрузить настройки.", true);
@@ -126,6 +131,10 @@ async function onSaveSettings(event) {
       enabled: announcementEnabled.checked,
       title: announcementTitle.value.trim(),
       text: announcementText.value.trim(),
+    },
+    consultant: {
+      enabled: consultantEnabled.checked,
+      lawsText: consultantLawsText.value.trim(),
     },
   };
 
@@ -149,9 +158,13 @@ async function onSaveSettings(event) {
 
     const result = await response.json();
     const saved = result.settings && result.settings.announcement ? result.settings.announcement : {};
+    const savedConsultant =
+      result.settings && result.settings.consultant ? result.settings.consultant : {};
     announcementEnabled.checked = Boolean(saved.enabled);
     announcementTitle.value = saved.title || "";
     announcementText.value = saved.text || "";
+    consultantEnabled.checked = Boolean(savedConsultant.enabled);
+    consultantLawsText.value = savedConsultant.lawsText || "";
 
     setMessage("Настройки сохранены.", false, true);
   } catch (error) {

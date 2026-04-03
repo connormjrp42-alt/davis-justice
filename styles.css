@@ -540,6 +540,97 @@ h1 {
   color: #95d99f;
 }
 
+.consultant-laws-text {
+  min-height: 220px;
+}
+
+.consultant-card {
+  margin-top: 1.2rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--stroke-soft);
+  border-radius: 16px;
+  padding: 1rem;
+}
+
+.consultant-state {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.consultant-state.error {
+  color: #ef9d9d;
+}
+
+.consultant-state.ok {
+  color: #95d99f;
+}
+
+.consultant-form {
+  margin-top: 0.8rem;
+}
+
+.consultant-question {
+  min-height: 150px;
+}
+
+.consultant-actions {
+  margin-top: 0.9rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.consultant-result {
+  margin-top: 1rem;
+  border-top: 1px solid var(--stroke-soft);
+  padding-top: 0.95rem;
+}
+
+.consultant-result-label {
+  margin: 0;
+  font-size: 0.76rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #f3e3a2;
+}
+
+.consultant-answer {
+  margin: 0.5rem 0 0;
+  color: var(--text-main);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.consultant-notice {
+  margin: 0.6rem 0 0;
+  color: var(--text-soft);
+  font-size: 0.9rem;
+}
+
+.consultant-matches {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.consultant-match-card {
+  border: 1px solid var(--stroke-soft);
+  border-radius: 12px;
+  background: #0a0a0a;
+  padding: 0.8rem;
+}
+
+.consultant-match-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.consultant-match-excerpt {
+  margin: 0.45rem 0 0;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
 .leaders-list {
   display: flex;
   flex-wrap: wrap;

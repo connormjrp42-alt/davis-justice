@@ -79,6 +79,11 @@ function isOverviewPath(pathname) {
   return normalized === "/" || normalized === "/index.html";
 }
 
+function isConsultantPath(pathname) {
+  const normalized = normalizePath(pathname);
+  return normalized === "/consultant.html";
+}
+
 function buildNavLink(href, text, isActive = false) {
   const link = document.createElement("a");
   link.href = href;
@@ -130,7 +135,16 @@ function renderDynamicNav(payload) {
   const isLeader = Boolean(payload?.authenticated && payload?.isLeader);
 
   departmentNav.innerHTML = "";
-  departmentNav.appendChild(buildNavLink("/index.html", "Обзор", isOverviewPath(currentPath)));
+  departmentNav.appendChild(
+    buildNavLink("/index.html", "\u041e\u0431\u0437\u043e\u0440", isOverviewPath(currentPath))
+  );
+  departmentNav.appendChild(
+    buildNavLink(
+      "/consultant.html",
+      "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442",
+      isConsultantPath(currentPath)
+    )
+  );
 
   const seenUrls = new Set();
   tabs.forEach((tab) => {
@@ -148,7 +162,7 @@ function renderDynamicNav(payload) {
 
   if (isLeader) {
     departmentNav.appendChild(
-      buildNavLink("/my-faction.html", "Моя фракция", currentPath === "/my-faction.html")
+      buildNavLink("/my-faction.html", "\u041c\u043e\u044f \u0444\u0440\u0430\u043a\u0446\u0438\u044f", currentPath === "/my-faction.html")
     );
   }
 }

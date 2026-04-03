@@ -41,6 +41,8 @@ const DATA_DIR = path.join(ROOT_DIR, "data");
 const SETTINGS_PATH = path.join(DATA_DIR, "site-settings.json");
 const FACTION_STATE_PATH = path.join(DATA_DIR, "faction-state.json");
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
+const CONSULTANT_MAX_TEXT_CHARS = Number(process.env.CONSULTANT_MAX_TEXT_CHARS || 200_000);
+const CONSULTANT_MAX_QUESTION_CHARS = Number(process.env.CONSULTANT_MAX_QUESTION_CHARS || 1_000);
 const MAX_IMAGE_DATA_URL_CHARS = Number(
   process.env.MAX_IMAGE_DATA_URL_CHARS || 3_200_000
 );
@@ -60,11 +62,87 @@ const DEFAULT_SETTINGS = {
     title: "",
     text: "",
   },
+  consultant: {
+    enabled: true,
+    lawsText: "",
+  },
 };
 const DEFAULT_FACTION_STATE = {
   leaders: [],
   factions: {},
 };
+const CONSULTANT_STOP_WORDS = new Set([
+  "и",
+  "в",
+  "во",
+  "на",
+  "с",
+  "со",
+  "по",
+  "к",
+  "ко",
+  "о",
+  "об",
+  "от",
+  "до",
+  "за",
+  "под",
+  "из",
+  "для",
+  "при",
+  "между",
+  "или",
+  "либо",
+  "а",
+  "но",
+  "что",
+  "как",
+  "когда",
+  "где",
+  "зачем",
+  "почему",
+  "это",
+  "этот",
+  "эта",
+  "эти",
+  "тот",
+  "та",
+  "те",
+  "его",
+  "ее",
+  "их",
+  "мы",
+  "вы",
+  "они",
+  "я",
+  "он",
+  "она",
+  "у",
+  "же",
+  "бы",
+  "не",
+  "да",
+  "нет",
+  "также",
+  "так",
+  "только",
+  "если",
+  "то",
+  "из-за",
+  "без",
+  "the",
+  "a",
+  "an",
+  "to",
+  "of",
+  "in",
+  "on",
+  "for",
+  "and",
+  "or",
+  "is",
+  "are",
+]);
 
 const sessions = new Map();
 const discordMemberCache = new Map();
@@ -115,6 +193,10 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/settings/public" && req.method === "GET") {
       return handlePublicSettings(req, res);
+    }
+
+    if (pathname === "/api/consultant/ask" && req.method === "POST") {
+      return handleConsultantAsk(req, res);
     }
 
     if (pathname === "/api/me" && req.method === "GET") {
@@ -272,15 +354,30 @@ function sanitizeSettings(input) {
     source.announcement && typeof source.announcement === "object"
       ? source.announcement
       : {};
+  const consultant =
+    source.consultant && typeof source.consultant === "object" ? source.consultant : {};
+  const consultantEnabled =
+    consultant.enabled === undefined
+      ? DEFAULT_SETTINGS.consultant.enabled
+      : Boolean(consultant.enabled);
 
   const title = String(announcement.title || "").trim().slice(0, 120);
   const text = String(announcement.text || "").trim().slice(0, 700);
+  const lawsText = String(consultant.lawsText || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim()
+    .slice(0, CONSULTANT_MAX_TEXT_CHARS);
 
   return {
     announcement: {
       enabled: Boolean(announcement.enabled && text),
       title,
       text,
+    },
+    consultant: {
+      enabled: consultantEnabled,
+      lawsText,
     },
   };
 }
@@ -289,6 +386,35 @@ function saveSettings(nextSettings) {
   siteSettings = sanitizeSettings(nextSettings);
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(siteSettings, null, 2), "utf-8");
   return siteSettings;
+}
+
+function toPublicSettings(settings) {
+  const source = settings && typeof settings === "object" ? settings : DEFAULT_SETTINGS;
+  const announcement =
+    source.announcement && typeof source.announcement === "object"
+      ? source.announcement
+      : DEFAULT_SETTINGS.announcement;
+  const consultant =
+    source.consultant && typeof source.consultant === "object"
+      ? source.consultant
+      : DEFAULT_SETTINGS.consultant;
+  const consultantEnabled =
+    consultant.enabled === undefined
+      ? DEFAULT_SETTINGS.consultant.enabled
+      : Boolean(consultant.enabled);
+
+  return {
+    announcement: {
+      enabled: Boolean(announcement.enabled && announcement.text),
+      title: String(announcement.title || ""),
+      text: String(announcement.text || ""),
+    },
+    consultant: {
+      enabled: consultantEnabled,
+      hasLaws: Boolean(String(consultant.lawsText || "").trim()),
+      maxQuestionChars: CONSULTANT_MAX_QUESTION_CHARS,
+    },
+  };
 }
 
 function loadFactionState() {
@@ -1427,7 +1553,246 @@ function handleMe(req, res) {
 }
 
 function handlePublicSettings(req, res) {
-  return sendJson(res, 200, siteSettings);
+  return sendJson(res, 200, toPublicSettings(siteSettings));
+}
+
+async function handleConsultantAsk(req, res) {
+  try {
+    const payload = await parseJsonBody(
+      req,
+      Math.max(8 * 1024, CONSULTANT_MAX_QUESTION_CHARS * 8)
+    );
+    const question = String(payload?.question || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, CONSULTANT_MAX_QUESTION_CHARS);
+
+    if (!question) {
+      return sendJson(res, 400, {
+        error: "Question is required",
+        details: "Send question in JSON body: {\"question\":\"...\"}",
+      });
+    }
+
+    const consultant =
+      siteSettings?.consultant && typeof siteSettings.consultant === "object"
+        ? siteSettings.consultant
+        : DEFAULT_SETTINGS.consultant;
+    if (!consultant.enabled) {
+      return sendJson(res, 503, {
+        error: "Consultant is disabled",
+      });
+    }
+
+    const lawsText = String(consultant.lawsText || "").trim();
+    if (!lawsText) {
+      return sendJson(res, 409, {
+        error: "Law base is empty",
+        details: "Add law texts in admin panel first.",
+      });
+    }
+
+    const result = buildConsultantResponse(question, lawsText);
+    return sendJson(res, 200, {
+      ok: true,
+      ...result,
+    });
+  } catch (error) {
+    return sendBodyParseError(res, error);
+  }
+}
+
+function buildConsultantResponse(question, lawsText) {
+  const chunks = splitLawTextIntoChunks(lawsText);
+  const keywords = tokenizeConsultantQuery(question);
+  const normalizedQuestion = normalizeConsultantText(question);
+  const hasQuestionPhrase = normalizedQuestion.length >= 8;
+
+  const ranked = chunks
+    .map((chunk, index) => {
+      const normalizedChunk = normalizeConsultantText(chunk.text);
+      let score = 0;
+      const matchedKeywords = [];
+
+      keywords.forEach((keyword) => {
+        if (!normalizedChunk.includes(keyword)) {
+          return;
+        }
+
+        matchedKeywords.push(keyword);
+        score += 2 + Math.min(4, Math.floor(keyword.length / 3));
+      });
+
+      for (let i = 0; i < keywords.length - 1; i += 1) {
+        const phrase = `${keywords[i]} ${keywords[i + 1]}`;
+        if (phrase.length > 7 && normalizedChunk.includes(phrase)) {
+          score += 4;
+        }
+      }
+
+      if (hasQuestionPhrase && normalizedChunk.includes(normalizedQuestion)) {
+        score += 12;
+      }
+
+      if (/стат(ья|ьи|ей|ью)/i.test(question) && /стат(ья|ьи|ей|ью)/i.test(chunk.text)) {
+        score += 2;
+      }
+
+      return {
+        index,
+        score,
+        title: chunk.title || `Фрагмент ${index + 1}`,
+        text: chunk.text,
+        keywords: Array.from(new Set(matchedKeywords)).slice(0, 8),
+      };
+    })
+    .filter((entry) => entry.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, 3);
+
+  if (!ranked.length) {
+    return {
+      question,
+      answer:
+        "В загруженных текстах не найдено прямого совпадения по формулировке вопроса. " +
+        "Уточните ключевые слова (например: статья, срок, ответственность, порядок).",
+      matches: [],
+      notice:
+        "Ответ формируется только по материалам, добавленным в админ-панели, и носит справочный характер.",
+    };
+  }
+
+  const matches = ranked.map((entry, idx) => ({
+    title: entry.title || `Фрагмент ${idx + 1}`,
+    excerpt: buildConsultantExcerpt(entry.text, entry.keywords, 460),
+    keywords: entry.keywords,
+  }));
+
+  const answerBody = matches
+    .map((match, idx) => `${idx + 1}. ${match.excerpt}`)
+    .join("\n\n");
+
+  return {
+    question,
+    answer:
+      `По вашему запросу найдены релевантные фрагменты:\n\n${answerBody}\n\n` +
+      "Проверьте оригинальную формулировку нормы перед применением.",
+    matches,
+    notice:
+      "Ответ формируется только по материалам, добавленным в админ-панели, и не заменяет юридическую консультацию.",
+  };
+}
+
+function splitLawTextIntoChunks(rawText) {
+  const normalized = String(rawText || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim();
+  if (!normalized) {
+    return [];
+  }
+
+  const blocks = normalized
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+  const chunks = [];
+
+  blocks.forEach((block) => {
+    const lines = block
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) {
+      return;
+    }
+
+    const titleCandidate =
+      lines.find((line) =>
+        /^(статья|глава|раздел|часть|пункт|article|chapter)\b/i.test(line)
+      ) || lines[0];
+    const title = String(titleCandidate || "").slice(0, 120);
+    const compact = lines.join(" ").replace(/\s+/g, " ").trim();
+    if (!compact) {
+      return;
+    }
+
+    if (compact.length <= 700) {
+      chunks.push({ title, text: compact });
+      return;
+    }
+
+    const sentences = compact.split(/(?<=[.!?])\s+/).filter(Boolean);
+    if (!sentences.length) {
+      const parts = compact.match(/.{1,700}/g) || [];
+      parts.forEach((part) => {
+        chunks.push({ title, text: part.trim() });
+      });
+      return;
+    }
+
+    let buffer = "";
+    sentences.forEach((sentence) => {
+      const nextText = buffer ? `${buffer} ${sentence}` : sentence;
+      if (nextText.length > 700 && buffer) {
+        chunks.push({ title, text: buffer.trim() });
+        buffer = sentence;
+      } else {
+        buffer = nextText;
+      }
+    });
+
+    if (buffer.trim()) {
+      chunks.push({ title, text: buffer.trim() });
+    }
+  });
+
+  return chunks.slice(0, 1200);
+}
+
+function normalizeConsultantText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/[^a-zа-я0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeConsultantQuery(question) {
+  const tokens = normalizeConsultantText(question).match(/[a-zа-я0-9]{2,}/g) || [];
+  const unique = [];
+  tokens.forEach((token) => {
+    if (token.length < 2 || CONSULTANT_STOP_WORDS.has(token) || unique.includes(token)) {
+      return;
+    }
+    unique.push(token);
+  });
+  return unique.slice(0, 24);
+}
+
+function buildConsultantExcerpt(text, keywords = [], maxLength = 460) {
+  const source = String(text || "").replace(/\s+/g, " ").trim();
+  if (source.length <= maxLength) {
+    return source;
+  }
+
+  const lower = source.toLowerCase().replace(/ё/g, "е");
+  let firstKeywordIndex = -1;
+  keywords.forEach((keyword) => {
+    const idx = lower.indexOf(keyword);
+    if (idx < 0) return;
+    if (firstKeywordIndex === -1 || idx < firstKeywordIndex) {
+      firstKeywordIndex = idx;
+    }
+  });
+
+  const pivot = firstKeywordIndex >= 0 ? firstKeywordIndex : 0;
+  const start = Math.max(0, pivot - Math.floor(maxLength * 0.35));
+  const rawSnippet = source.slice(start, start + maxLength).trim();
+  const prefix = start > 0 ? "..." : "";
+  const suffix = start + maxLength < source.length ? "..." : "";
+  return `${prefix}${rawSnippet}${suffix}`;
 }
 
 function getAuthorizedAdmin(req, res) {
@@ -1540,7 +1905,24 @@ async function handleAdminSettingsUpdate(req, res) {
 
   try {
     const payload = await parseJsonBody(req);
-    const nextSettings = saveSettings(payload || {});
+    const current = siteSettings && typeof siteSettings === "object" ? siteSettings : {};
+    const incoming = payload && typeof payload === "object" ? payload : {};
+    const nextSettings = saveSettings({
+      ...current,
+      ...incoming,
+      announcement: {
+        ...(current.announcement || {}),
+        ...(incoming.announcement && typeof incoming.announcement === "object"
+          ? incoming.announcement
+          : {}),
+      },
+      consultant: {
+        ...(current.consultant || {}),
+        ...(incoming.consultant && typeof incoming.consultant === "object"
+          ? incoming.consultant
+          : {}),
+      },
+    });
     return sendJson(res, 200, {
       ok: true,
       settings: nextSettings,

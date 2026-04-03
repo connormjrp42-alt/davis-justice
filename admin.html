@@ -71,6 +71,27 @@
             <p class="form-help">До 700 символов.</p>
           </div>
 
+          <div class="form-group">
+            <p class="form-label">Консультант по законодательству</p>
+            <label class="toggle-row">
+              <input type="checkbox" id="consultant-enabled" />
+              Включить вкладку «Консультант»
+            </label>
+            <p class="form-help">
+              Ответы формируются только по тексту ниже. Сами тексты не выдаются в публичном API.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="consultant-laws-text">Тексты законов / норм</label>
+            <textarea
+              class="field-textarea consultant-laws-text"
+              id="consultant-laws-text"
+              maxlength="200000"
+              placeholder="Вставьте статьи, регламенты и внутренние нормы. Разделяйте блоки пустой строкой."
+            ></textarea>
+            <p class="form-help">До 200000 символов.</p>
+          </div>
           <div class="admin-actions">
             <button class="btn btn-primary" type="submit">Сохранить</button>
             <button class="btn btn-secondary" id="reload-settings" type="button">

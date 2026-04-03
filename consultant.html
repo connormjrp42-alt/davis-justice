@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Davis Justice - Консультант</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Oswald:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container topbar">
+        <a class="logo" href="./index.html">Davis Justice</a>
+        <div class="topbar-right">
+          <a class="home-link" href="./index.html">На главную</a>
+          <div class="auth-widget" data-auth-widget></div>
+        </div>
+      </div>
+      <div class="container">
+        <nav class="department-nav" aria-label="Разделы сайта">
+          <a href="/index.html">Обзор</a>
+          <a class="active" href="/consultant.html">Консультант</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page-main" id="consultant-root">
+      <section class="container page-hero reveal">
+        <p class="page-kicker">Справочный модуль</p>
+        <h1>Консультант</h1>
+        <p class="page-description">
+          Задайте вопрос по законодательству. Ответ формируется только по материалам, которые
+          администратор загрузил в базу норм.
+        </p>
+      </section>
+
+      <section class="container consultant-card reveal">
+        <p class="consultant-state" id="consultant-state">Проверка доступности консультанта...</p>
+
+        <form class="consultant-form" id="consultant-form">
+          <label class="form-label" for="consultant-question">Ваш вопрос</label>
+          <textarea
+            class="field-textarea consultant-question"
+            id="consultant-question"
+            maxlength="1000"
+            placeholder="Например: какой срок рассмотрения заявления и какая ответственность за нарушение?"
+            required
+          ></textarea>
+
+          <div class="consultant-actions">
+            <button class="btn btn-primary" id="consultant-submit" type="submit">
+              Получить ответ
+            </button>
+            <button class="btn btn-secondary" id="consultant-clear" type="button">
+              Очистить
+            </button>
+          </div>
+        </form>
+
+        <section class="consultant-result" id="consultant-result" hidden>
+          <p class="consultant-result-label">Ответ консультанта</p>
+          <p class="consultant-answer" id="consultant-answer"></p>
+          <p class="consultant-notice" id="consultant-notice"></p>
+          <div class="consultant-matches" id="consultant-matches"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+    <script src="./consultant.js"></script>
+  </body>
+</html>
