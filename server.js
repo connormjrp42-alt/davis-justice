@@ -2055,11 +2055,33 @@ function extractArticleReferences(text) {
   return Array.from(
     new Set(
       matches
-        .map((item) => normalizeConsultantText(item))
-        .map((item) => item.replace(/\s+/g, " ").trim())
+        .map((item) => normalizeArticleReference(item))
         .filter(Boolean)
     )
   ).slice(0, 8);
+}
+
+function normalizeArticleReference(value) {
+  const raw = String(value || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/часть|част/g, "ч")
+    .replace(/[^\d.ч\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!raw) {
+    return "";
+  }
+  const articleMatch = raw.match(/^\d{1,2}(?:\.\d{1,3})?/);
+  if (!articleMatch) {
+    return "";
+  }
+  const article = articleMatch[0];
+  const partMatch = raw.match(/ч\s*(\d{1,2})\b/);
+  if (partMatch?.[1]) {
+    return `${article} ч${partMatch[1]}`;
+  }
+  return article;
 }
 
 function getConsultantSemanticIndex(lawsText) {
@@ -2089,6 +2111,7 @@ function getConsultantSemanticIndex(lawsText) {
         text,
         normalizedText: normalizeConsultantText(text),
         titleNormalized: normalizeConsultantText(fragment?.title || ""),
+        articleRefs: extractArticleReferences(text),
         tokenFreq,
         tokenSet,
         sentences: splitConsultantSentences(text),
@@ -2168,9 +2191,15 @@ function rankConsultantFragments(fragments, profile, idfMap) {
       score += 1.4;
     }
 
-    const normalizedText = fragment.normalizedText || "";
+    const fragmentRefs = new Set(
+      (Array.isArray(fragment.articleRefs) ? fragment.articleRefs : [])
+        .map((entry) => normalizeArticleReference(entry))
+        .filter(Boolean)
+    );
     const refs = Array.isArray(profile.articleRefs) ? profile.articleRefs : [];
-    const refsMatched = refs.filter((ref) => normalizedText.includes(ref));
+    const refsMatched = refs
+      .map((ref) => normalizeArticleReference(ref))
+      .filter((ref) => ref && fragmentRefs.has(ref));
     if (refs.length > 0) {
       if (!refsMatched.length) {
         score *= 0.18;
