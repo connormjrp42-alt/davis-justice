@@ -80,8 +80,112 @@
           </article>
         </div>
       </section>
+
+      <section class="container reveal document-fill-card">
+        <h2 class="section-title">Заполнение шаблона на сайте</h2>
+        <p class="document-fill-hint">
+          Заполните поля ниже, и система автоматически соберет черновик документа по выбранному
+          шаблону.
+        </p>
+
+        <form id="document-fill-form" class="document-fill-form">
+          <label class="form-label" for="document-template-kind">Шаблон документа</label>
+          <select class="field-input" id="document-template-kind" required>
+            <option value="criminal_case">Постановление о возбуждении уголовного дела</option>
+            <option value="appeal_acceptance">Постановление о принятии обращения</option>
+          </select>
+
+          <div class="document-fill-grid">
+            <div>
+              <label class="form-label" for="doc-number">Номер постановления</label>
+              <input class="field-input" id="doc-number" placeholder="Например: 017" required />
+            </div>
+            <div>
+              <label class="form-label" for="decision-date">Дата постановления</label>
+              <input class="field-input" id="decision-date" placeholder="ДД.ММ.ГГГГ" required />
+            </div>
+            <div>
+              <label class="form-label" for="appeal-date">Дата поступления обращения</label>
+              <input class="field-input" id="appeal-date" placeholder="ДД.ММ.ГГГГ" required />
+            </div>
+            <div>
+              <label class="form-label" for="case-identifier">Идентификатор дела</label>
+              <input class="field-input" id="case-identifier" placeholder="Например: DJR-2026-041" />
+            </div>
+            <div>
+              <label class="form-label" for="prosecutor-role">Должность прокурора</label>
+              <input class="field-input" id="prosecutor-role" placeholder="Например: Старший прокурор" required />
+            </div>
+            <div>
+              <label class="form-label" for="prosecutor-name">ФИО прокурора</label>
+              <input class="field-input" id="prosecutor-name" placeholder="Имя Фамилия" required />
+            </div>
+            <div>
+              <label class="form-label" for="applicant-name">ФИО заявителя</label>
+              <input class="field-input" id="applicant-name" placeholder="Имя Фамилия" required />
+            </div>
+            <div>
+              <label class="form-label" for="applicant-passport">Паспорт заявителя</label>
+              <input class="field-input" id="applicant-passport" placeholder="0000" required />
+            </div>
+            <div>
+              <label class="form-label" for="unit-name">Фракция/подразделение сотрудника</label>
+              <input class="field-input" id="unit-name" placeholder="Например: LSPD" required />
+            </div>
+            <div>
+              <label class="form-label" for="officer-name">ФИО сотрудника</label>
+              <input class="field-input" id="officer-name" placeholder="Имя Фамилия" required />
+            </div>
+            <div>
+              <label class="form-label" for="officer-passport">Паспорт сотрудника</label>
+              <input class="field-input" id="officer-passport" placeholder="0000" required />
+            </div>
+            <div>
+              <label class="form-label" for="responsible-copy">Ответственный за передачу копии</label>
+              <input
+                class="field-input"
+                id="responsible-copy"
+                placeholder="Например: Шеф Los Santos Police Department"
+              />
+            </div>
+          </div>
+
+          <label class="form-label" for="violation-description">Описание нарушения</label>
+          <textarea
+            class="field-textarea"
+            id="violation-description"
+            placeholder="Опишите, в чем выразились противоправные действия"
+            required
+          ></textarea>
+
+          <label class="form-label" for="legal-grounds">Основания (статьи, нормы, регламенты)</label>
+          <textarea
+            class="field-textarea"
+            id="legal-grounds"
+            placeholder="Например: ст. 17.1 УК, ст. 8.4 ПК, регламент прокуратуры ..."
+            required
+          ></textarea>
+
+          <div class="document-fill-actions">
+            <button class="btn btn-primary" type="submit">Сформировать документ</button>
+            <button class="btn btn-secondary" type="button" id="document-copy">Скопировать текст</button>
+            <button class="btn btn-secondary" type="button" id="document-download">Скачать .txt</button>
+            <button class="btn btn-secondary" type="button" id="document-clear">Очистить</button>
+          </div>
+        </form>
+
+        <p class="admin-message" id="document-fill-message">
+          Заполните форму и нажмите «Сформировать документ».
+        </p>
+
+        <article class="document-preview-card" id="document-preview-card" hidden>
+          <h3>Предпросмотр</h3>
+          <pre id="document-preview"></pre>
+        </article>
+      </section>
     </main>
 
     <script src="./script.js"></script>
+    <script src="./document-flow.js"></script>
   </body>
 </html>
