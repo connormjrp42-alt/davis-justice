@@ -99,7 +99,7 @@ function onDocumentFillSubmit(event) {
   if (documentPreviewCard) {
     documentPreviewCard.hidden = false;
   }
-  setDocumentFillMessage("Документ сформирован. Можно копировать текст или скачать файл.", false, true);
+  setDocumentFillMessage("Документ сформирован. Можно копировать текст или скачать PDF.", false, true);
 }
 
 function collectDocumentPayload() {
@@ -233,29 +233,55 @@ function copyViaFallbackTextarea(text) {
   document.body.removeChild(textarea);
 }
 
-function onDownloadDocumentText() {
+async function onDownloadDocumentText() {
   if (!generatedDocumentText) {
     setDocumentFillMessage("Сначала сформируйте документ.", true);
     return;
   }
 
-  const blob = new Blob([generatedDocumentText], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  const filePrefix =
-    generatedTemplateKind === "appeal_acceptance"
-      ? "postanovlenie-prinyatie-obrashcheniya"
-      : "postanovlenie-vozbuzhdenie-ugolovnogo-dela";
-  const safeNumber = String(generatedDocNumber || "draft")
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  anchor.href = url;
-  anchor.download = `${filePrefix}-${safeNumber || "draft"}.txt`;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
-  setDocumentFillMessage("Файл документа скачан.", false, true);
+  try {
+    const response = await fetch("/api/document-flow/pdf", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/pdf,application/json",
+      },
+      body: JSON.stringify({
+        templateKind: generatedTemplateKind,
+        documentText: generatedDocumentText,
+        documentNumber: generatedDocNumber,
+      }),
+    });
+
+    if (!response.ok) {
+      const payload = await safeJson(response);
+      const details = payload?.details ? ` ${payload.details}` : "";
+      const error = payload?.error || `HTTP ${response.status}`;
+      setDocumentFillMessage(`Не удалось скачать PDF: ${error}.${details}`.trim(), true);
+      return;
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const filePrefix =
+      generatedTemplateKind === "appeal_acceptance"
+        ? "postanovlenie-prinyatie-obrashcheniya"
+        : "postanovlenie-vozbuzhdenie-ugolovnogo-dela";
+    const safeNumber = String(generatedDocNumber || "draft")
+      .replace(/[^a-zA-Z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    anchor.href = url;
+    anchor.download = `${filePrefix}-${safeNumber || "draft"}.pdf`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    setDocumentFillMessage("PDF скачан. В файл включены изображения шаблона.", false, true);
+  } catch (error) {
+    console.error("PDF download error:", error);
+    setDocumentFillMessage("Ошибка сети при скачивании PDF.", true);
+  }
 }
 
 function onClearDocumentForm() {
@@ -286,4 +312,12 @@ function formatDate(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const year = String(date.getFullYear());
   return `${day}.${month}.${year}`;
+}
+
+async function safeJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
 }

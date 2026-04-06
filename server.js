@@ -84,6 +84,16 @@ const MAJESTIC_SERVERS = [
 ];
 const MAJESTIC_SERVER_MAP = new Map(MAJESTIC_SERVERS.map((server) => [server.id, server]));
 const CONSULTANT_ALLOWED_FILE_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".txt"]);
+const DOCUMENT_FLOW_TEMPLATE_FILES = Object.freeze({
+  criminal_case: {
+    templatePath: path.join(ROOT_DIR, "templates", "postanovlenie-vozbuzhdenie-ugolovnogo-dela.docx"),
+    filePrefix: "postanovlenie-vozbuzhdenie-ugolovnogo-dela",
+  },
+  appeal_acceptance: {
+    templatePath: path.join(ROOT_DIR, "templates", "postanovlenie-o-prinyatii-obrashcheniya.docx"),
+    filePrefix: "postanovlenie-prinyatie-obrashcheniya",
+  },
+});
 const DEFAULT_SETTINGS = {
   announcement: {
     enabled: false,
@@ -239,6 +249,9 @@ const discordMemberPending = new Map();
 const consultantSemanticIndexCache = new Map();
 let cachedPdfParse = null;
 let cachedMammoth = null;
+let cachedPdfKit = null;
+let cachedAdmZip = null;
+let cachedPdfFontPath = "";
 let siteSettings = loadSettings();
 let factionState = loadFactionState();
 
@@ -292,6 +305,10 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/consultant/ask" && req.method === "POST") {
       return handleConsultantAsk(req, res);
+    }
+
+    if (pathname === "/api/document-flow/pdf" && req.method === "POST") {
+      return handleDocumentFlowPdf(req, res);
     }
 
     if (pathname === "/api/me" && req.method === "GET") {
@@ -1843,6 +1860,181 @@ async function handleConsultantAsk(req, res) {
   } catch (error) {
     return sendBodyParseError(res, error);
   }
+}
+
+async function handleDocumentFlowPdf(req, res) {
+  try {
+    const payload = await parseJsonBody(req, MAX_JSON_BODY_BYTES);
+    const templateKind = String(payload?.templateKind || "").trim();
+    const documentText = String(payload?.documentText || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/\u0000/g, "")
+      .trim();
+    const documentNumber = String(payload?.documentNumber || "").trim();
+
+    const templateInfo = getDocumentFlowTemplateInfo(templateKind);
+    if (!templateInfo) {
+      return sendJson(res, 400, {
+        error: "Invalid template kind",
+        details: "Supported templates: criminal_case, appeal_acceptance.",
+      });
+    }
+    if (!documentText) {
+      return sendJson(res, 400, {
+        error: "Document text is required",
+        details: "Generate the document text first and send it in documentText.",
+      });
+    }
+    if (documentText.length > 260_000) {
+      return sendJson(res, 413, {
+        error: "Document is too large",
+        details: "Reduce document size and try again.",
+      });
+    }
+
+    const pdfBuffer = await buildDocumentFlowPdfBuffer(templateInfo, documentText);
+    const safeNumber = sanitizeDocumentFlowFilePart(documentNumber || "draft");
+    const filename = `${templateInfo.filePrefix}-${safeNumber || "draft"}.pdf`;
+
+    res.writeHead(200, {
+      "Content-Type": "application/pdf",
+      "Content-Length": pdfBuffer.length,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    });
+    res.end(pdfBuffer);
+  } catch (error) {
+    const message = String(error?.message || "");
+    if (message.toLowerCase().includes("missing dependency")) {
+      return sendJson(res, 500, {
+        error: "PDF feature is not ready",
+        details: message,
+      });
+    }
+    return sendBodyParseError(res, error);
+  }
+}
+
+function getDocumentFlowTemplateInfo(templateKind) {
+  const key = String(templateKind || "").trim();
+  const info = DOCUMENT_FLOW_TEMPLATE_FILES[key];
+  if (!info) {
+    return null;
+  }
+  if (!fs.existsSync(info.templatePath)) {
+    return null;
+  }
+  return info;
+}
+
+async function buildDocumentFlowPdfBuffer(templateInfo, documentText) {
+  const PDFDocument = getPdfKit();
+  const images = extractDocxMediaImages(templateInfo.templatePath);
+  const fontPath = getPdfFontPath();
+
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const doc = new PDFDocument({
+      size: "A4",
+      margins: { top: 54, left: 52, right: 52, bottom: 54 },
+      info: {
+        Title: "Davis Justice Document",
+      },
+    });
+
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", (error) => reject(error));
+
+    doc.font(fontPath).fontSize(11.5).fillColor("#101010");
+    writeDocumentFlowHeaderImages(doc, images);
+
+    const lines = String(documentText || "").split("\n");
+    lines.forEach((line) => {
+      const clean = String(line || "").trim();
+      if (!clean) {
+        doc.moveDown(0.65);
+        return;
+      }
+      doc.text(clean, {
+        align: "left",
+        lineGap: 2,
+      });
+    });
+
+    doc.end();
+  });
+}
+
+function writeDocumentFlowHeaderImages(doc, images) {
+  if (!Array.isArray(images) || !images.length) {
+    return;
+  }
+
+  const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const maxHeight = 175;
+  images.forEach((image) => {
+    if (!image?.buffer?.length) {
+      return;
+    }
+
+    const bottomLimit = doc.page.height - doc.page.margins.bottom;
+    if (doc.y + maxHeight > bottomLimit - 110) {
+      doc.addPage();
+    }
+
+    const startY = doc.y;
+    try {
+      doc.image(image.buffer, doc.page.margins.left, startY, {
+        fit: [maxWidth, maxHeight],
+        align: "center",
+        valign: "top",
+      });
+      doc.y = startY + maxHeight + 10;
+    } catch (error) {
+      console.error("Document-flow image render skipped:", error?.message || error);
+    }
+  });
+}
+
+function extractDocxMediaImages(templatePath) {
+  const AdmZip = getAdmZip();
+  if (!templatePath || !fs.existsSync(templatePath)) {
+    return [];
+  }
+
+  try {
+    const zip = new AdmZip(templatePath);
+    return zip
+      .getEntries()
+      .filter(
+        (entry) =>
+          !entry.isDirectory &&
+          /^word\/media\/.+\.(png|jpe?g|webp|bmp)$/i.test(String(entry.entryName || ""))
+      )
+      .sort((left, right) =>
+        String(left.entryName || "").localeCompare(String(right.entryName || ""), "en", {
+          numeric: true,
+          sensitivity: "base",
+        })
+      )
+      .map((entry) => ({
+        name: path.basename(entry.entryName),
+        buffer: entry.getData(),
+      }))
+      .filter((item) => item?.buffer?.length);
+  } catch (error) {
+    console.error("Document-flow media extraction error:", error);
+    return [];
+  }
+}
+
+function sanitizeDocumentFlowFilePart(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
 }
 
 async function buildConsultantResponse(question, lawsText) {
@@ -3648,6 +3840,59 @@ function getMammoth() {
   } catch (error) {
     throw new Error("Missing dependency: mammoth. Run `npm install mammoth`.");
   }
+}
+
+function getPdfKit() {
+  if (cachedPdfKit) {
+    return cachedPdfKit;
+  }
+  try {
+    cachedPdfKit = require("pdfkit");
+    return cachedPdfKit;
+  } catch (error) {
+    throw new Error(
+      "Missing dependency: pdfkit. Run `npm install pdfkit adm-zip dejavu-fonts-ttf`."
+    );
+  }
+}
+
+function getAdmZip() {
+  if (cachedAdmZip) {
+    return cachedAdmZip;
+  }
+  try {
+    cachedAdmZip = require("adm-zip");
+    return cachedAdmZip;
+  } catch (error) {
+    throw new Error(
+      "Missing dependency: adm-zip. Run `npm install pdfkit adm-zip dejavu-fonts-ttf`."
+    );
+  }
+}
+
+function getPdfFontPath() {
+  if (cachedPdfFontPath) {
+    return cachedPdfFontPath;
+  }
+
+  const candidates = [];
+  try {
+    candidates.push(require.resolve("dejavu-fonts-ttf/ttf/DejaVuSans.ttf"));
+  } catch {
+    // ignore and continue with fallback candidates
+  }
+  candidates.push(path.join(ROOT_DIR, "fonts", "DejaVuSans.ttf"));
+  candidates.push(path.join(ROOT_DIR, "fonts", "NotoSans-Regular.ttf"));
+
+  const found = candidates.find((candidate) => candidate && fs.existsSync(candidate));
+  if (!found) {
+    throw new Error(
+      "Missing font for PDF generation. Install `dejavu-fonts-ttf` or add fonts/DejaVuSans.ttf."
+    );
+  }
+
+  cachedPdfFontPath = found;
+  return cachedPdfFontPath;
 }
 
 function sendBodyParseError(res, error) {

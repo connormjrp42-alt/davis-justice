@@ -8,7 +8,10 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
+    "dejavu-fonts-ttf": "^2.37.3",
     "mammoth": "^1.8.1",
-    "pdf-parse": "^1.1.1"
+    "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.18.0"
   }
 }
