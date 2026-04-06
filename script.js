@@ -84,6 +84,11 @@ function isConsultantPath(pathname) {
   return normalized === "/consultant.html";
 }
 
+function isDocumentFlowPath(pathname) {
+  const normalized = normalizePath(pathname);
+  return normalized === "/document-flow.html";
+}
+
 function buildNavLink(href, text, isActive = false) {
   const link = document.createElement("a");
   link.href = href;
@@ -143,6 +148,13 @@ function renderDynamicNav(payload) {
       "/consultant.html",
       "\u041a\u043e\u043d\u0441\u0443\u043b\u044c\u0442\u0430\u043d\u0442",
       isConsultantPath(currentPath)
+    )
+  );
+  departmentNav.appendChild(
+    buildNavLink(
+      "/document-flow.html",
+      "\u0414\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u043e\u043e\u0431\u043e\u0440\u043e\u0442",
+      isDocumentFlowPath(currentPath)
     )
   );
 

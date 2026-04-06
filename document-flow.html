@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Davis Justice - Документооборот</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Oswald:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="container topbar">
+        <a class="logo" href="./index.html">Davis Justice</a>
+        <div class="topbar-right">
+          <a class="home-link" href="./index.html">На главную</a>
+          <div class="auth-widget" data-auth-widget></div>
+        </div>
+      </div>
+      <div class="container">
+        <nav class="department-nav" aria-label="Разделы сайта">
+          <a href="/index.html">Обзор</a>
+          <a href="/consultant.html">Консультант</a>
+          <a class="active" href="/document-flow.html">Документооборот</a>
+        </nav>
+      </div>
+    </header>
+
+    <main class="page-main" id="document-flow-root">
+      <section class="container page-hero reveal">
+        <p class="page-kicker">Служебные формы</p>
+        <h1>Документооборот</h1>
+        <p class="page-description">
+          Здесь собраны шаблоны документов для рабочей деятельности. Скачайте нужный файл, внесите
+          данные по делу и используйте его в рамках регламентов вашей фракции.
+        </p>
+      </section>
+
+      <section class="container reveal">
+        <h2 class="section-title">Первые шаблоны</h2>
+        <div class="content-grid">
+          <article class="content-card">
+            <h3>Постановление о возбуждении уголовного дела</h3>
+            <p>
+              Шаблон постановления для оформления решения о возбуждении уголовного дела с
+              заполнением реквизитов, оснований и процессуальных данных.
+            </p>
+            <p class="doc-template-meta">Формат: DOCX</p>
+            <div class="doc-template-actions">
+              <a
+                class="btn btn-primary"
+                href="/templates/postanovlenie-vozbuzhdenie-ugolovnogo-dela.docx"
+                download
+              >
+                Скачать шаблон
+              </a>
+            </div>
+          </article>
+
+          <article class="content-card">
+            <h3>Постановление о принятии обращения</h3>
+            <p>
+              Шаблон постановления для регистрации и принятия обращения с фиксированием заявителя,
+              сути обращения и первичных процессуальных действий.
+            </p>
+            <p class="doc-template-meta">Формат: DOCX</p>
+            <div class="doc-template-actions">
+              <a
+                class="btn btn-primary"
+                href="/templates/postanovlenie-o-prinyatii-obrashcheniya.docx"
+                download
+              >
+                Скачать шаблон
+              </a>
+            </div>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="./script.js"></script>
+  </body>
+</html>

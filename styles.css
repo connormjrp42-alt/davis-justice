@@ -410,6 +410,18 @@ h1 {
   line-height: 1.45;
 }
 
+.doc-template-meta {
+  margin-top: 0.75rem !important;
+  font-size: 0.82rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #f3e3a2 !important;
+}
+
+.doc-template-actions {
+  margin-top: 0.95rem;
+}
+
 .section-title {
   margin: 1.6rem 0 0.7rem;
   font-family: "Oswald", sans-serif;
