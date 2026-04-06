@@ -11,6 +11,13 @@ const consultantFilesInput = document.getElementById("consultant-files-input");
 const consultantUploadButton = document.getElementById("consultant-upload");
 const consultantUploadMessage = document.getElementById("consultant-upload-message");
 const consultantFilesList = document.getElementById("consultant-files-list");
+const documentTemplateTitleInput = document.getElementById("document-template-title");
+const documentTemplateDescriptionInput = document.getElementById("document-template-description");
+const documentTemplateKindSelect = document.getElementById("document-template-kind");
+const documentTemplateFileInput = document.getElementById("document-template-file");
+const documentTemplateUploadButton = document.getElementById("document-template-upload");
+const documentTemplateUploadMessage = document.getElementById("document-template-upload-message");
+const documentTemplateList = document.getElementById("document-template-list");
 
 const leadersStatus = document.getElementById("leaders-status");
 const leadersForm = document.getElementById("leaders-form");
@@ -22,6 +29,7 @@ const revokeLeaderButton = document.getElementById("revoke-leader");
 const refreshLeadersButton = document.getElementById("refresh-leaders");
 
 let consultantServers = [];
+let documentFlowTemplates = [];
 
 if (settingsForm) {
   settingsForm.addEventListener("submit", onSaveSettings);
@@ -37,6 +45,10 @@ if (consultantServerSelect) {
 
 if (consultantUploadButton) {
   consultantUploadButton.addEventListener("click", onUploadConsultantFiles);
+}
+
+if (documentTemplateUploadButton) {
+  documentTemplateUploadButton.addEventListener("click", onUploadDocumentTemplate);
 }
 
 if (grantLeaderButton) {
@@ -57,6 +69,7 @@ async function loadAdminPanel() {
   setMessage("");
   setLeadersMessage("");
   setConsultantUploadMessage("");
+  setDocumentTemplateUploadMessage("");
   setStatus("Проверка доступа...");
 
   const access = await verifyAdminAccess();
@@ -125,6 +138,7 @@ async function loadAdminSettings() {
     const payload = await response.json();
     const announcement = payload.announcement || {};
     const consultant = payload.consultant || {};
+    const documentFlow = payload.documentFlow || {};
 
     announcementEnabled.checked = Boolean(announcement.enabled);
     announcementTitle.value = announcement.title || "";
@@ -134,7 +148,11 @@ async function loadAdminSettings() {
     consultantServers = Array.isArray(consultant.servers) ? consultant.servers : [];
     populateConsultantServers(consultantServers);
     renderSelectedServerFiles();
+
+    documentFlowTemplates = Array.isArray(documentFlow.templates) ? documentFlow.templates : [];
+    renderDocumentTemplateList();
     setConsultantUploadMessage("");
+    setDocumentTemplateUploadMessage("");
   } catch (error) {
     console.error("Load admin settings error:", error);
     setMessage("Не удалось загрузить настройки.", true);
@@ -257,6 +275,111 @@ async function onUploadConsultantFiles() {
   }
 }
 
+function renderDocumentTemplateList() {
+  if (!documentTemplateList) return;
+  documentTemplateList.innerHTML = "";
+
+  if (!documentFlowTemplates.length) {
+    const empty = document.createElement("p");
+    empty.className = "admin-status";
+    empty.textContent = "Шаблоны пока не загружены.";
+    documentTemplateList.appendChild(empty);
+    return;
+  }
+
+  documentFlowTemplates.forEach((template) => {
+    const item = document.createElement("a");
+    item.className = "leader-pill";
+    item.href = template.downloadUrl || "#";
+    item.target = "_blank";
+    item.rel = "noopener noreferrer";
+
+    const sizeKb = Math.max(1, Math.round(Number(template.size || 0) / 1024));
+    const kindMap = {
+      criminal_case: "Используется: возбуждение дела",
+      appeal_acceptance: "Используется: принятие обращения",
+      none: "Только скачивание",
+    };
+    const kindLabel = kindMap[String(template.templateKind || "none")] || "Только скачивание";
+    item.textContent = `${template.title || template.name || "Шаблон"} (${sizeKb} KB, ${kindLabel})`;
+    documentTemplateList.appendChild(item);
+  });
+}
+
+async function onUploadDocumentTemplate() {
+  const file = documentTemplateFileInput?.files?.[0] || null;
+  if (!file) {
+    setDocumentTemplateUploadMessage("Выберите файл шаблона.", true);
+    return;
+  }
+
+  const title = String(documentTemplateTitleInput?.value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const description = String(documentTemplateDescriptionInput?.value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const templateKind = String(documentTemplateKindSelect?.value || "none")
+    .trim()
+    .toLowerCase();
+
+  setDocumentTemplateUploadBusy(true);
+  setDocumentTemplateUploadMessage("Загружаем шаблон...");
+
+  try {
+    const formData = new FormData();
+    formData.append("templateFile", file, file.name);
+    if (title) {
+      formData.append("title", title);
+    }
+    if (description) {
+      formData.append("description", description);
+    }
+    formData.append("templateKind", templateKind);
+
+    const response = await fetch("/api/admin/document-flow/templates/upload", {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    });
+
+    const payload = await safeJson(response);
+    if (!response.ok) {
+      const reason = payload && payload.error ? payload.error : "Ошибка загрузки";
+      const details = payload && payload.details ? ` ${payload.details}` : "";
+      setDocumentTemplateUploadMessage(`${reason}.${details}`.trim(), true);
+      return;
+    }
+
+    const nextTemplates =
+      payload && payload.settings && payload.settings.documentFlow
+        ? payload.settings.documentFlow.templates
+        : [];
+    documentFlowTemplates = Array.isArray(nextTemplates) ? nextTemplates : documentFlowTemplates;
+    renderDocumentTemplateList();
+
+    if (documentTemplateFileInput) {
+      documentTemplateFileInput.value = "";
+    }
+    if (documentTemplateTitleInput) {
+      documentTemplateTitleInput.value = "";
+    }
+    if (documentTemplateDescriptionInput) {
+      documentTemplateDescriptionInput.value = "";
+    }
+    if (documentTemplateKindSelect) {
+      documentTemplateKindSelect.value = "none";
+    }
+
+    setDocumentTemplateUploadMessage("Шаблон загружен и добавлен в документооборот.", false, true);
+  } catch (error) {
+    console.error("Document template upload error:", error);
+    setDocumentTemplateUploadMessage("Не удалось загрузить шаблон. Попробуйте снова.", true);
+  } finally {
+    setDocumentTemplateUploadBusy(false);
+  }
+}
+
 async function onSaveSettings(event) {
   event.preventDefault();
   setMessage("Сохранение...");
@@ -294,6 +417,8 @@ async function onSaveSettings(event) {
     const saved = result.settings && result.settings.announcement ? result.settings.announcement : {};
     const savedConsultant =
       result.settings && result.settings.consultant ? result.settings.consultant : {};
+    const savedDocumentFlow =
+      result.settings && result.settings.documentFlow ? result.settings.documentFlow : {};
     announcementEnabled.checked = Boolean(saved.enabled);
     announcementTitle.value = saved.title || "";
     announcementText.value = saved.text || "";
@@ -301,6 +426,10 @@ async function onSaveSettings(event) {
     consultantServers = Array.isArray(savedConsultant.servers) ? savedConsultant.servers : consultantServers;
     populateConsultantServers(consultantServers);
     renderSelectedServerFiles();
+    documentFlowTemplates = Array.isArray(savedDocumentFlow.templates)
+      ? savedDocumentFlow.templates
+      : documentFlowTemplates;
+    renderDocumentTemplateList();
 
     setMessage("Настройки сохранены.", false, true);
   } catch (error) {
@@ -441,6 +570,14 @@ function setConsultantUploadMessage(text, isError = false, isOk = false) {
   if (isOk) consultantUploadMessage.classList.add("ok");
 }
 
+function setDocumentTemplateUploadMessage(text, isError = false, isOk = false) {
+  if (!documentTemplateUploadMessage) return;
+  documentTemplateUploadMessage.textContent = text;
+  documentTemplateUploadMessage.classList.remove("error", "ok");
+  if (isError) documentTemplateUploadMessage.classList.add("error");
+  if (isOk) documentTemplateUploadMessage.classList.add("ok");
+}
+
 function setConsultantUploadBusy(isBusy) {
   if (consultantUploadButton) {
     consultantUploadButton.disabled = isBusy;
@@ -450,6 +587,24 @@ function setConsultantUploadBusy(isBusy) {
   }
   if (consultantServerSelect) {
     consultantServerSelect.disabled = isBusy;
+  }
+}
+
+function setDocumentTemplateUploadBusy(isBusy) {
+  if (documentTemplateUploadButton) {
+    documentTemplateUploadButton.disabled = isBusy;
+  }
+  if (documentTemplateFileInput) {
+    documentTemplateFileInput.disabled = isBusy;
+  }
+  if (documentTemplateTitleInput) {
+    documentTemplateTitleInput.disabled = isBusy;
+  }
+  if (documentTemplateDescriptionInput) {
+    documentTemplateDescriptionInput.disabled = isBusy;
+  }
+  if (documentTemplateKindSelect) {
+    documentTemplateKindSelect.disabled = isBusy;
   }
 }
 

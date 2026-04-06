@@ -6,6 +6,8 @@ const documentFillMessage = document.getElementById("document-fill-message");
 const documentCopyButton = document.getElementById("document-copy");
 const documentDownloadButton = document.getElementById("document-download");
 const documentClearButton = document.getElementById("document-clear");
+const documentTemplatesState = document.getElementById("document-templates-state");
+const documentTemplatesGrid = document.getElementById("document-templates-grid");
 
 const docNumberInput = document.getElementById("doc-number");
 const decisionDateInput = document.getElementById("decision-date");
@@ -53,6 +55,7 @@ if (documentClearButton) {
 }
 
 initDocumentFill();
+initDocumentTemplates();
 
 function initDocumentFill() {
   const today = formatDate(new Date());
@@ -66,6 +69,80 @@ function initDocumentFill() {
     responsibleCopyInput.value = defaultResponsibleCopy;
   }
   onTemplateKindChange();
+}
+
+async function initDocumentTemplates() {
+  if (!documentTemplatesState || !documentTemplatesGrid) return;
+
+  documentTemplatesState.textContent = "Загружаем список шаблонов...";
+  documentTemplatesState.classList.remove("error", "ok");
+  documentTemplatesGrid.innerHTML = "";
+
+  try {
+    const response = await fetch("/api/settings/public", {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`Status ${response.status}`);
+    }
+
+    const payload = await response.json();
+    const templates =
+      payload && payload.documentFlow && Array.isArray(payload.documentFlow.templates)
+        ? payload.documentFlow.templates
+        : [];
+
+    if (!templates.length) {
+      documentTemplatesState.textContent = "Пока нет добавленных шаблонов.";
+      return;
+    }
+
+    documentTemplatesState.textContent = `Доступно шаблонов: ${templates.length}.`;
+    documentTemplatesState.classList.add("ok");
+
+    templates.forEach((template) => {
+      const card = document.createElement("article");
+      card.className = "content-card";
+
+      const title = document.createElement("h3");
+      title.textContent = String(template.title || template.name || "Шаблон документа");
+
+      const description = document.createElement("p");
+      description.textContent = String(template.description || "Шаблон добавлен через админ-панель.");
+
+      const meta = document.createElement("p");
+      meta.className = "doc-template-meta";
+      const extension = String(template.name || "")
+        .split(".")
+        .pop()
+        .toUpperCase();
+      meta.textContent = `Формат: ${extension || "FILE"}`;
+
+      const actions = document.createElement("div");
+      actions.className = "doc-template-actions";
+
+      const download = document.createElement("a");
+      download.className = "btn btn-primary";
+      download.href = String(template.downloadUrl || "#");
+      download.textContent = "Скачать шаблон";
+      if (template.downloadUrl) {
+        download.setAttribute("download", "");
+      } else {
+        download.setAttribute("aria-disabled", "true");
+      }
+
+      actions.appendChild(download);
+      card.append(title, description, meta, actions);
+      documentTemplatesGrid.appendChild(card);
+    });
+  } catch (error) {
+    console.error("Document templates load error:", error);
+    documentTemplatesState.textContent = "Не удалось загрузить шаблоны.";
+    documentTemplatesState.classList.add("error");
+  }
 }
 
 function onTemplateKindChange() {

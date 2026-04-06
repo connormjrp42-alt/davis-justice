@@ -40,9 +40,11 @@ const ADMIN_DISCORD_IDS = (process.env.ADMIN_DISCORD_IDS || "953290565838053466"
 const DATA_DIR = path.join(ROOT_DIR, "data");
 const SETTINGS_PATH = path.join(DATA_DIR, "site-settings.json");
 const FACTION_STATE_PATH = path.join(DATA_DIR, "faction-state.json");
+const DOCUMENT_TEMPLATES_DIR = path.join(DATA_DIR, "document-templates");
 const MAX_JSON_BODY_BYTES = Number(process.env.MAX_JSON_BODY_BYTES || 16 * 1024 * 1024);
 const CONSULTANT_MAX_FILES_PER_UPLOAD = Number(process.env.CONSULTANT_MAX_FILES_PER_UPLOAD || 8);
 const CONSULTANT_MAX_FILES_PER_SERVER = Number(process.env.CONSULTANT_MAX_FILES_PER_SERVER || 60);
+const DOCUMENT_FLOW_MAX_TEMPLATES = Number(process.env.DOCUMENT_FLOW_MAX_TEMPLATES || 120);
 const CONSULTANT_USE_OLLAMA = String(process.env.CONSULTANT_USE_OLLAMA || "false")
   .trim()
   .toLowerCase() === "true";
@@ -84,6 +86,12 @@ const MAJESTIC_SERVERS = [
 ];
 const MAJESTIC_SERVER_MAP = new Map(MAJESTIC_SERVERS.map((server) => [server.id, server]));
 const CONSULTANT_ALLOWED_FILE_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".txt"]);
+const DOCUMENT_FLOW_ALLOWED_TEMPLATE_EXTENSIONS = new Set([".docx", ".doc", ".pdf", ".txt"]);
+const DOCUMENT_FLOW_TEMPLATE_KIND_VALUES = new Set([
+  "none",
+  "criminal_case",
+  "appeal_acceptance",
+]);
 const DOCUMENT_FLOW_TEMPLATE_FILES = Object.freeze({
   criminal_case: {
     templatePath: path.join(ROOT_DIR, "templates", "postanovlenie-vozbuzhdenie-ugolovnogo-dela.docx"),
@@ -103,6 +111,9 @@ const DEFAULT_SETTINGS = {
   consultant: {
     enabled: true,
     serverBases: {},
+  },
+  documentFlow: {
+    templates: [],
   },
 };
 const DEFAULT_FACTION_STATE = {
@@ -282,6 +293,9 @@ const server = http.createServer(async (req, res) => {
     const factionStatementApiMatch = pathname.match(
       /^\/api\/faction\/site\/([^/]+)\/statements$/i
     );
+    const documentTemplateDownloadMatch = pathname.match(
+      /^\/api\/document-flow\/templates\/([^/]+)\/download$/i
+    );
 
     if (factionStatementApiMatch && req.method === "POST") {
       return handleFactionStatementCreate(
@@ -311,6 +325,18 @@ const server = http.createServer(async (req, res) => {
       return handleDocumentFlowPdf(req, res);
     }
 
+    if (
+      documentTemplateDownloadMatch &&
+      (req.method === "GET" || req.method === "HEAD")
+    ) {
+      return handleDocumentFlowTemplateDownload(
+        req,
+        res,
+        req.method,
+        decodeURIComponent(documentTemplateDownloadMatch[1])
+      );
+    }
+
     if (pathname === "/api/me" && req.method === "GET") {
       return handleMe(req, res);
     }
@@ -337,6 +363,10 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === "/api/admin/consultant/upload" && req.method === "POST") {
       return handleAdminConsultantUpload(req, res);
+    }
+
+    if (pathname === "/api/admin/document-flow/templates/upload" && req.method === "POST") {
+      return handleAdminDocumentFlowTemplateUpload(req, res);
     }
 
     if ((pathname === "/auth/discord" || pathname === "/auth/discord/") && req.method === "GET") {
@@ -472,6 +502,10 @@ function sanitizeSettings(input) {
       : {};
   const consultant =
     source.consultant && typeof source.consultant === "object" ? source.consultant : {};
+  const documentFlow =
+    source.documentFlow && typeof source.documentFlow === "object"
+      ? source.documentFlow
+      : {};
   const consultantEnabled =
     consultant.enabled === undefined
       ? DEFAULT_SETTINGS.consultant.enabled
@@ -524,6 +558,7 @@ function sanitizeSettings(input) {
       enabled: consultantEnabled,
       serverBases,
     },
+    documentFlow: sanitizeDocumentFlowSettings(documentFlow),
   };
 }
 
@@ -578,6 +613,64 @@ function sanitizeConsultantFileMeta(input) {
   };
 }
 
+function sanitizeDocumentFlowSettings(input) {
+  const source = input && typeof input === "object" ? input : {};
+  const templates = Array.isArray(source.templates)
+    ? source.templates
+        .map((entry) => sanitizeDocumentFlowTemplateMeta(entry))
+        .filter(Boolean)
+        .slice(0, DOCUMENT_FLOW_MAX_TEMPLATES)
+    : [];
+  return { templates };
+}
+
+function sanitizeDocumentFlowTemplateMeta(input) {
+  if (!input || typeof input !== "object") {
+    return null;
+  }
+
+  const id = String(input.id || "").trim().slice(0, 120);
+  const title = String(input.title || "").trim().slice(0, 180);
+  const name = String(input.name || "").trim().slice(0, 240);
+  const storedName = String(input.storedName || "").trim().slice(0, 180);
+  if (!id || !title || !name || !storedName) {
+    return null;
+  }
+
+  const ext = path.extname(storedName).toLowerCase();
+  if (!DOCUMENT_FLOW_ALLOWED_TEMPLATE_EXTENSIONS.has(ext)) {
+    return null;
+  }
+
+  const normalizedStoredName = sanitizeUploadFileName(storedName);
+  if (normalizedStoredName !== storedName) {
+    return null;
+  }
+
+  const type = String(input.type || "").trim().slice(0, 120) || "application/octet-stream";
+  const description = String(input.description || "").trim().slice(0, 800);
+  const size = Number(input.size || 0);
+  const uploadedAtRaw = String(input.uploadedAt || "").trim();
+  const uploadedAt = uploadedAtRaw && !Number.isNaN(Date.parse(uploadedAtRaw))
+    ? new Date(uploadedAtRaw).toISOString()
+    : new Date().toISOString();
+  const templateKind = DOCUMENT_FLOW_TEMPLATE_KIND_VALUES.has(String(input.templateKind || "").trim())
+    ? String(input.templateKind || "").trim()
+    : "none";
+
+  return {
+    id,
+    title,
+    description,
+    name,
+    storedName,
+    type,
+    size: Number.isFinite(size) ? Math.max(0, Math.floor(size)) : 0,
+    uploadedAt,
+    templateKind,
+  };
+}
+
 function getMajesticServerInfo(serverId) {
   const cleanId = String(serverId || "").trim().toLowerCase();
   return MAJESTIC_SERVER_MAP.get(cleanId) || null;
@@ -610,6 +703,10 @@ function toPublicSettings(settings) {
       filesCount: Array.isArray(base.files) ? base.files.length : 0,
     };
   });
+  const documentFlow = sanitizeDocumentFlowSettings(source.documentFlow);
+  const templates = documentFlow.templates
+    .map((template) => toPublicDocumentFlowTemplate(template))
+    .filter(Boolean);
 
   return {
     announcement: {
@@ -620,6 +717,9 @@ function toPublicSettings(settings) {
     consultant: {
       enabled: consultantEnabled,
       servers,
+    },
+    documentFlow: {
+      templates,
     },
   };
 }
@@ -644,6 +744,7 @@ function toAdminSettingsResponse(settings) {
       textChars: base.lawsText.length,
     };
   });
+  const documentFlow = sanitizeDocumentFlowSettings(source.documentFlow);
 
   return {
     announcement: {
@@ -659,6 +760,39 @@ function toAdminSettingsResponse(settings) {
         allowedExtensions: Array.from(CONSULTANT_ALLOWED_FILE_EXTENSIONS),
       },
     },
+    documentFlow: {
+      templates: documentFlow.templates
+        .map((template) => {
+          const shared = toPublicDocumentFlowTemplate(template);
+          if (!shared) return null;
+          return {
+            ...shared,
+            templateKind: template.templateKind,
+            size: template.size,
+            uploadedAt: template.uploadedAt,
+          };
+        })
+        .filter(Boolean),
+      limits: {
+        maxTemplates: DOCUMENT_FLOW_MAX_TEMPLATES,
+        allowedExtensions: Array.from(DOCUMENT_FLOW_ALLOWED_TEMPLATE_EXTENSIONS),
+      },
+    },
+  };
+}
+
+function toPublicDocumentFlowTemplate(template) {
+  const clean = sanitizeDocumentFlowTemplateMeta(template);
+  if (!clean) {
+    return null;
+  }
+  return {
+    id: clean.id,
+    title: clean.title,
+    description: clean.description,
+    name: clean.name,
+    type: clean.type,
+    downloadUrl: `/api/document-flow/templates/${encodeURIComponent(clean.id)}/download`,
   };
 }
 
@@ -1920,14 +2054,60 @@ async function handleDocumentFlowPdf(req, res) {
 
 function getDocumentFlowTemplateInfo(templateKind) {
   const key = String(templateKind || "").trim();
-  const info = DOCUMENT_FLOW_TEMPLATE_FILES[key];
-  if (!info) {
+  const defaults = DOCUMENT_FLOW_TEMPLATE_FILES[key];
+  if (!defaults) {
     return null;
   }
-  if (!fs.existsSync(info.templatePath)) {
+  const preferredCustomPath = getPreferredDocumentFlowTemplateFilePath(key);
+  const templatePath = preferredCustomPath || defaults.templatePath;
+  if (!templatePath || !fs.existsSync(templatePath)) {
     return null;
   }
-  return info;
+  return {
+    ...defaults,
+    templatePath,
+  };
+}
+
+function getDocumentFlowTemplatesFromSettings(settings = siteSettings) {
+  const source = settings && typeof settings === "object" ? settings : {};
+  const documentFlow = sanitizeDocumentFlowSettings(source.documentFlow);
+  return Array.isArray(documentFlow.templates) ? documentFlow.templates : [];
+}
+
+function getDocumentFlowTemplateStoragePath(storedName) {
+  const safeName = sanitizeUploadFileName(storedName || "");
+  if (!safeName) {
+    return "";
+  }
+  const targetPath = path.join(DOCUMENT_TEMPLATES_DIR, safeName);
+  const normalizedRoot = path.normalize(`${DOCUMENT_TEMPLATES_DIR}${path.sep}`);
+  const normalizedTarget = path.normalize(targetPath);
+  if (!normalizedTarget.startsWith(normalizedRoot)) {
+    return "";
+  }
+  return targetPath;
+}
+
+function getPreferredDocumentFlowTemplateFilePath(templateKind) {
+  const cleanKind = String(templateKind || "").trim();
+  if (!cleanKind || cleanKind === "none") {
+    return "";
+  }
+
+  const templates = getDocumentFlowTemplatesFromSettings(siteSettings)
+    .filter((template) => template.templateKind === cleanKind)
+    .sort(
+      (left, right) =>
+        Date.parse(String(right.uploadedAt || "")) - Date.parse(String(left.uploadedAt || ""))
+    );
+  for (const template of templates) {
+    const filePath = getDocumentFlowTemplateStoragePath(template.storedName);
+    if (filePath && fs.existsSync(filePath)) {
+      return filePath;
+    }
+  }
+  return "";
 }
 
 async function buildDocumentFlowPdfBuffer(templateInfo, templateKind, fields, documentText) {
@@ -3237,6 +3417,157 @@ async function handleAdminConsultantUpload(req, res) {
   } catch (error) {
     return sendBodyParseError(res, error);
   }
+}
+
+async function handleAdminDocumentFlowTemplateUpload(req, res) {
+  const user = getAuthorizedAdmin(req, res);
+  if (!user) {
+    return;
+  }
+
+  try {
+    const payload = await parseMultipartFormData(req);
+    const files = Array.isArray(payload.files) ? payload.files.filter((file) => file.data?.length) : [];
+    const uploadFile = files.find((file) => String(file.fieldName || "") === "templateFile") || files[0];
+    if (!uploadFile) {
+      return sendJson(res, 400, {
+        error: "No file uploaded",
+        details: "Attach a template file in DOCX/DOC/PDF/TXT format.",
+      });
+    }
+
+    const ext = path.extname(String(uploadFile.filename || "")).toLowerCase();
+    if (!DOCUMENT_FLOW_ALLOWED_TEMPLATE_EXTENSIONS.has(ext)) {
+      return sendJson(res, 400, {
+        error: "Unsupported template type",
+        details: `Allowed formats: ${Array.from(DOCUMENT_FLOW_ALLOWED_TEMPLATE_EXTENSIONS).join(", ")}`,
+      });
+    }
+
+    const fallbackTitle = path.basename(String(uploadFile.filename || "template"), ext);
+    const title = String(payload.fields?.title || fallbackTitle)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    if (!title) {
+      return sendJson(res, 400, {
+        error: "Template title is required",
+      });
+    }
+
+    const description = String(payload.fields?.description || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 800);
+    const requestedKind = String(payload.fields?.templateKind || "none")
+      .trim()
+      .toLowerCase();
+    const templateKind = DOCUMENT_FLOW_TEMPLATE_KIND_VALUES.has(requestedKind)
+      ? requestedKind
+      : "none";
+
+    if (!fs.existsSync(DOCUMENT_TEMPLATES_DIR)) {
+      fs.mkdirSync(DOCUMENT_TEMPLATES_DIR, { recursive: true });
+    }
+
+    const id = `tpl_${Date.now().toString(36)}_${crypto.randomUUID().slice(0, 8)}`;
+    const storedName = `${id}${ext}`;
+    const targetPath = getDocumentFlowTemplateStoragePath(storedName);
+    if (!targetPath) {
+      return sendJson(res, 500, {
+        error: "Template storage path error",
+      });
+    }
+    fs.writeFileSync(targetPath, uploadFile.data);
+
+    const templateMeta = sanitizeDocumentFlowTemplateMeta({
+      id,
+      title,
+      description,
+      name: sanitizeUploadFileName(uploadFile.filename),
+      storedName,
+      type: uploadFile.contentType || MIME_TYPES[ext] || "application/octet-stream",
+      size: uploadFile.size || uploadFile.data.length,
+      uploadedAt: new Date().toISOString(),
+      templateKind,
+    });
+    if (!templateMeta) {
+      return sendJson(res, 500, {
+        error: "Template metadata error",
+      });
+    }
+
+    const currentTemplates = getDocumentFlowTemplatesFromSettings(siteSettings);
+    const nextTemplates = [templateMeta, ...currentTemplates]
+      .map((entry) => sanitizeDocumentFlowTemplateMeta(entry))
+      .filter(Boolean)
+      .slice(0, DOCUMENT_FLOW_MAX_TEMPLATES);
+
+    const nextSettings = saveSettings({
+      ...siteSettings,
+      documentFlow: {
+        ...(siteSettings.documentFlow || {}),
+        templates: nextTemplates,
+      },
+    });
+
+    const publicTemplate = toPublicDocumentFlowTemplate(templateMeta);
+    return sendJson(res, 200, {
+      ok: true,
+      template: publicTemplate
+        ? {
+            ...publicTemplate,
+            templateKind: templateMeta.templateKind,
+            size: templateMeta.size,
+            uploadedAt: templateMeta.uploadedAt,
+          }
+        : null,
+      settings: toAdminSettingsResponse(nextSettings),
+    });
+  } catch (error) {
+    return sendBodyParseError(res, error);
+  }
+}
+
+function handleDocumentFlowTemplateDownload(req, res, method, rawTemplateId) {
+  const templateId = String(rawTemplateId || "").trim();
+  if (!templateId) {
+    return sendJson(res, 400, { error: "Invalid template id" });
+  }
+
+  const templates = getDocumentFlowTemplatesFromSettings(siteSettings);
+  const template = templates.find((entry) => String(entry.id || "") === templateId);
+  if (!template) {
+    return sendJson(res, 404, { error: "Template not found" });
+  }
+
+  const filePath = getDocumentFlowTemplateStoragePath(template.storedName);
+  if (!filePath || !fs.existsSync(filePath)) {
+    return sendJson(res, 404, { error: "Template file not found" });
+  }
+
+  fs.stat(filePath, (statError, stats) => {
+    if (statError || !stats.isFile()) {
+      return sendJson(res, 404, { error: "Template file not found" });
+    }
+
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType = MIME_TYPES[ext] || template.type || "application/octet-stream";
+    const filename = sanitizeUploadFileName(template.name || `template${ext}`);
+
+    res.writeHead(200, {
+      "Content-Type": contentType,
+      "Content-Length": stats.size,
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": "no-store",
+    });
+
+    if (method === "HEAD") {
+      return res.end();
+    }
+
+    fs.createReadStream(filePath).pipe(res);
+  });
 }
 
 function getFactionRecordBySlug(rawSlug) {

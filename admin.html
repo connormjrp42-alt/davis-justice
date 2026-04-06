@@ -111,6 +111,66 @@
             <p class="form-label">Загруженные файлы для сервера</p>
             <div class="leaders-list consultant-files-list" id="consultant-files-list"></div>
           </div>
+
+          <div class="form-group">
+            <p class="form-label">Шаблоны документооборота</p>
+            <p class="form-help">
+              Загруженные здесь шаблоны появятся на вкладке «Документооборот». При необходимости
+              можно привязать шаблон к автоматической PDF-генерации.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="document-template-title">Название шаблона</label>
+            <input
+              class="field-input"
+              id="document-template-title"
+              type="text"
+              placeholder="Например: Постановление о продлении проверки"
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="document-template-description">Описание шаблона</label>
+            <textarea
+              class="field-textarea"
+              id="document-template-description"
+              placeholder="Кратко опишите назначение шаблона"
+            ></textarea>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="document-template-kind">Привязка к автогенерации PDF</label>
+            <select class="field-input" id="document-template-kind">
+              <option value="none">Только для скачивания</option>
+              <option value="criminal_case">Использовать для «Возбуждения уголовного дела»</option>
+              <option value="appeal_acceptance">Использовать для «Принятия обращения»</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="document-template-file">Файл шаблона</label>
+            <input
+              class="field-input"
+              id="document-template-file"
+              type="file"
+              accept=".pdf,.doc,.docx,.txt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+            />
+          </div>
+
+          <div class="admin-actions">
+            <button class="btn btn-secondary" id="document-template-upload" type="button">
+              Добавить шаблон
+            </button>
+          </div>
+
+          <p class="admin-message" id="document-template-upload-message"></p>
+
+          <div class="form-group">
+            <p class="form-label">Список шаблонов</p>
+            <div class="leaders-list consultant-files-list" id="document-template-list"></div>
+          </div>
+
           <div class="admin-actions">
             <button class="btn btn-primary" type="submit">Сохранить</button>
             <button class="btn btn-secondary" id="reload-settings" type="button">
