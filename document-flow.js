@@ -30,6 +30,7 @@ const defaultResponsibleCopy =
 let generatedDocumentText = "";
 let generatedTemplateKind = "criminal_case";
 let generatedDocNumber = "";
+let generatedPayload = null;
 
 if (documentFillForm) {
   documentFillForm.addEventListener("submit", onDocumentFillSubmit);
@@ -92,6 +93,7 @@ function onDocumentFillSubmit(event) {
   generatedDocumentText = text;
   generatedTemplateKind = payload.templateKind;
   generatedDocNumber = payload.docNumber;
+  generatedPayload = payload;
 
   if (documentPreview) {
     documentPreview.textContent = text;
@@ -250,6 +252,7 @@ async function onDownloadDocumentText() {
         templateKind: generatedTemplateKind,
         documentText: generatedDocumentText,
         documentNumber: generatedDocNumber,
+        fields: generatedPayload || collectDocumentPayload(),
       }),
     });
 
@@ -289,6 +292,7 @@ function onClearDocumentForm() {
   generatedDocumentText = "";
   generatedTemplateKind = "criminal_case";
   generatedDocNumber = "";
+  generatedPayload = null;
   if (documentPreview) {
     documentPreview.textContent = "";
   }

@@ -251,7 +251,7 @@ let cachedPdfParse = null;
 let cachedMammoth = null;
 let cachedPdfKit = null;
 let cachedAdmZip = null;
-let cachedPdfFontPath = "";
+let cachedPdfFontPaths = null;
 let siteSettings = loadSettings();
 let factionState = loadFactionState();
 
@@ -1866,12 +1866,11 @@ async function handleDocumentFlowPdf(req, res) {
   try {
     const payload = await parseJsonBody(req, MAX_JSON_BODY_BYTES);
     const templateKind = String(payload?.templateKind || "").trim();
-    const documentText = String(payload?.documentText || "")
+    const inputFields = payload?.fields && typeof payload.fields === "object" ? payload.fields : {};
+    const fallbackDocumentText = String(payload?.documentText || "")
       .replace(/\r\n/g, "\n")
       .replace(/\u0000/g, "")
       .trim();
-    const documentNumber = String(payload?.documentNumber || "").trim();
-
     const templateInfo = getDocumentFlowTemplateInfo(templateKind);
     if (!templateInfo) {
       return sendJson(res, 400, {
@@ -1879,10 +1878,14 @@ async function handleDocumentFlowPdf(req, res) {
         details: "Supported templates: criminal_case, appeal_acceptance.",
       });
     }
+
+    const fields = sanitizeDocumentFlowFields(inputFields);
+    const documentText =
+      buildDocumentFlowTextByTemplate(templateKind, fields) || fallbackDocumentText;
     if (!documentText) {
       return sendJson(res, 400, {
         error: "Document text is required",
-        details: "Generate the document text first and send it in documentText.",
+        details: "Fill template fields first.",
       });
     }
     if (documentText.length > 260_000) {
@@ -1892,8 +1895,8 @@ async function handleDocumentFlowPdf(req, res) {
       });
     }
 
-    const pdfBuffer = await buildDocumentFlowPdfBuffer(templateInfo, documentText);
-    const safeNumber = sanitizeDocumentFlowFilePart(documentNumber || "draft");
+    const pdfBuffer = await buildDocumentFlowPdfBuffer(templateInfo, templateKind, fields, documentText);
+    const safeNumber = sanitizeDocumentFlowFilePart(fields.docNumber || payload?.documentNumber || "draft");
     const filename = `${templateInfo.filePrefix}-${safeNumber || "draft"}.pdf`;
 
     res.writeHead(200, {
@@ -1927,10 +1930,11 @@ function getDocumentFlowTemplateInfo(templateKind) {
   return info;
 }
 
-async function buildDocumentFlowPdfBuffer(templateInfo, documentText) {
+async function buildDocumentFlowPdfBuffer(templateInfo, templateKind, fields, documentText) {
   const PDFDocument = getPdfKit();
   const images = extractDocxMediaImages(templateInfo.templatePath);
-  const fontPath = getPdfFontPath();
+  const fontPaths = getPdfFontPaths();
+  const text = String(documentText || "").trim();
 
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -1946,24 +1950,238 @@ async function buildDocumentFlowPdfBuffer(templateInfo, documentText) {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", (error) => reject(error));
 
-    doc.font(fontPath).fontSize(11.5).fillColor("#101010");
-    writeDocumentFlowHeaderImages(doc, images);
-
-    const lines = String(documentText || "").split("\n");
-    lines.forEach((line) => {
-      const clean = String(line || "").trim();
-      if (!clean) {
-        doc.moveDown(0.65);
-        return;
-      }
-      doc.text(clean, {
-        align: "left",
-        lineGap: 2,
-      });
+    renderDocumentFlowPdfTemplate(doc, {
+      templateKind,
+      fields,
+      text,
+      images,
+      fontPaths,
     });
 
     doc.end();
   });
+}
+
+function renderDocumentFlowPdfTemplate(
+  doc,
+  { templateKind = "criminal_case", fields = {}, text = "", images = [], fontPaths = {} }
+) {
+  const contentWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
+  const regularFont = fontPaths.regular;
+  const boldFont = fontPaths.bold || regularFont;
+
+  doc.fillColor("#111111");
+  if (regularFont) {
+    doc.font(regularFont);
+  }
+  doc.fontSize(12);
+
+  writeDocumentFlowHeaderImages(doc, images);
+
+  const title =
+    templateKind === "appeal_acceptance"
+      ? `Постановление "о принятии обращения" №${fields.docNumber || "000"}`
+      : `Постановление "о возбуждении уголовного дела" №${fields.docNumber || "000"}`;
+  const prosecutorFull = `${fields.prosecutorRole || "Должность"} ${fields.prosecutorName || "Имя Фамилия"}`.trim();
+  const applicantName = fields.applicantName || "Имя Фамилия";
+  const applicantPassport = fields.applicantPassport || "0000";
+  const officerName = fields.officerName || "Имя Фамилия";
+  const officerPassport = fields.officerPassport || "0000";
+  const unitName = fields.unitName || "Подразделение";
+
+  const sections = buildDocumentFlowSectionsByTemplate(templateKind, fields, text);
+
+  if (boldFont) doc.font(boldFont);
+  doc.fontSize(12.5).text("Офис Генерального прокурора", {
+    align: "center",
+  });
+  doc.moveDown(0.55);
+  doc.fontSize(13).text(title, {
+    align: "center",
+  });
+  doc.moveDown(1.0);
+
+  if (regularFont) doc.font(regularFont);
+  doc.fontSize(12).text(
+    `Офис Генерального прокурора, в лице ${prosecutorFull}, в рамках рассмотрения обращения от гражданина ${applicantName} с номером паспорта ${applicantPassport},`,
+    {
+      width: contentWidth,
+      align: "justify",
+      lineGap: 2,
+      indent: 26,
+    }
+  );
+  doc.moveDown(0.85);
+
+  if (boldFont) doc.font(boldFont);
+  doc.text("Установил:", {
+    width: contentWidth,
+    align: "left",
+  });
+  doc.moveDown(0.45);
+
+  if (regularFont) doc.font(regularFont);
+  doc.text(
+    `${fields.appealDate || "00.00.2026"} в офис Генерального прокурора поступило обращение от гражданина ${applicantName} с номером паспорта ${applicantPassport}.`,
+    { width: contentWidth, align: "justify", lineGap: 2, indent: 26 }
+  );
+  doc.moveDown(0.3);
+  doc.text(
+    `В настоящем обращении заявитель указывает на противоправность действий сотрудника ${unitName} ${officerName} с номером паспорта ${officerPassport}, выразившихся в ${fields.violationDescription || "[описать в чем выразились]"}.`,
+    { width: contentWidth, align: "justify", lineGap: 2, indent: 26 }
+  );
+  doc.moveDown(0.3);
+  doc.text(`В соответствии с ${fields.legalGrounds || "[основания]"} офис Генерального прокурора`, {
+    width: contentWidth,
+    align: "justify",
+    lineGap: 2,
+    indent: 26,
+  });
+  doc.moveDown(0.75);
+
+  if (boldFont) doc.font(boldFont);
+  doc.text("Постановил:", {
+    width: contentWidth,
+    align: "left",
+  });
+  doc.moveDown(0.45);
+
+  if (regularFont) doc.font(regularFont);
+  sections.forEach((line) => {
+    const clean = String(line || "").trim();
+    if (!clean) {
+      doc.moveDown(0.28);
+      return;
+    }
+    doc.text(clean, {
+      width: contentWidth,
+      align: "left",
+      lineGap: 2,
+      indent: 18,
+    });
+    doc.moveDown(0.12);
+  });
+
+  const minSignatureGap = 110;
+  const bottomLimit = doc.page.height - doc.page.margins.bottom;
+  if (doc.y + minSignatureGap > bottomLimit) {
+    doc.addPage();
+  }
+
+  doc.moveDown(1.15);
+  if (regularFont) doc.font(regularFont);
+  doc.text(prosecutorFull, {
+    width: contentWidth,
+    align: "left",
+  });
+  doc.moveDown(0.42);
+  doc.text(fields.decisionDate || "00.00.2026", {
+    width: contentWidth,
+    align: "left",
+  });
+  doc.moveDown(0.42);
+  doc.text("Подпись", {
+    width: contentWidth,
+    align: "left",
+  });
+}
+
+function buildDocumentFlowSectionsByTemplate(templateKind, fields, fallbackText) {
+  const officerName = fields.officerName || "Имя Фамилия";
+  const officerPassport = fields.officerPassport || "0000";
+  if (templateKind === "appeal_acceptance") {
+    const applicantName = fields.applicantName || "Имя Фамилия";
+    const prosecutorFull = `${fields.prosecutorRole || "Должность"} ${fields.prosecutorName || "Имя Фамилия"}`.trim();
+    const unitName = fields.unitName || "Подразделение";
+    return [
+      `Принять обращение в офис Генерального прокурора от гражданина ${applicantName} в производство ${prosecutorFull};`,
+      `Назначить прокурорскую проверку изложенных в обращении действий сотрудника ${unitName} ${officerName} с номером паспорта ${officerPassport}, на факт совершения правонарушения;`,
+      "Передать копию настоящего постановления заявителю.",
+    ];
+  }
+
+  if (templateKind === "criminal_case") {
+    return [
+      `Возбудить уголовное дело в отношении гражданина ${officerName} с номером паспорта ${officerPassport};`,
+      `Признать гражданина ${officerName} с номером паспорта ${officerPassport} обвиняемым в настоящем уголовном деле;`,
+      `Назначить уголовному делу идентификатор ${fields.caseIdentifier || "[DJR/DGA]"};`,
+      "Передать копию настоящего постановления обвиняемому;",
+      `Обязанность за передачу копии постановления возложить на ${fields.responsibleCopy || "уполномоченное должностное лицо"};`,
+      "Установить срок на передачу копии постановления 24 часа.",
+    ];
+  }
+
+  return String(fallbackText || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function buildDocumentFlowTextByTemplate(templateKind, fields) {
+  const prosecutorFull = `${fields.prosecutorRole || "Должность"} ${fields.prosecutorName || "Имя Фамилия"}`.trim();
+  const applicantName = fields.applicantName || "Имя Фамилия";
+  const applicantPassport = fields.applicantPassport || "0000";
+  const unitName = fields.unitName || "Подразделение";
+  const officerName = fields.officerName || "Имя Фамилия";
+  const officerPassport = fields.officerPassport || "0000";
+  const title =
+    templateKind === "appeal_acceptance"
+      ? `Постановление "о принятии обращения" №${fields.docNumber || "000"}`
+      : `Постановление "о возбуждении уголовного дела" №${fields.docNumber || "000"}`;
+  const sections = buildDocumentFlowSectionsByTemplate(templateKind, fields, "");
+
+  return [
+    "Офис Генерального прокурора",
+    "",
+    title,
+    "",
+    `Офис Генерального прокурора, в лице ${prosecutorFull}, в рамках рассмотрения обращения от гражданина ${applicantName} с номером паспорта ${applicantPassport},`,
+    "",
+    "Установил:",
+    "",
+    `${fields.appealDate || "00.00.2026"} в офис Генерального прокурора поступило обращение от гражданина ${applicantName} с номером паспорта ${applicantPassport}.`,
+    `В настоящем обращении заявитель указывает на противоправность действий сотрудника ${unitName} ${officerName} с номером паспорта ${officerPassport}, выразившихся в ${fields.violationDescription || "[описать в чем выразились]"}.`,
+    `В соответствии с ${fields.legalGrounds || "[основания]"} офис Генерального прокурора`,
+    "",
+    "Постановил:",
+    "",
+    ...sections,
+    "",
+    "",
+    prosecutorFull,
+    fields.decisionDate || "00.00.2026",
+    "",
+    "Подпись",
+  ].join("\n");
+}
+
+function sanitizeDocumentFlowFields(input) {
+  const source = input && typeof input === "object" ? input : {};
+  return {
+    docNumber: sanitizeDocumentFlowField(source.docNumber, 40),
+    decisionDate: sanitizeDocumentFlowField(source.decisionDate, 24),
+    appealDate: sanitizeDocumentFlowField(source.appealDate, 24),
+    caseIdentifier: sanitizeDocumentFlowField(source.caseIdentifier, 80),
+    prosecutorRole: sanitizeDocumentFlowField(source.prosecutorRole, 120),
+    prosecutorName: sanitizeDocumentFlowField(source.prosecutorName, 140),
+    applicantName: sanitizeDocumentFlowField(source.applicantName, 140),
+    applicantPassport: sanitizeDocumentFlowField(source.applicantPassport, 40),
+    unitName: sanitizeDocumentFlowField(source.unitName, 180),
+    officerName: sanitizeDocumentFlowField(source.officerName, 140),
+    officerPassport: sanitizeDocumentFlowField(source.officerPassport, 40),
+    responsibleCopy: sanitizeDocumentFlowField(source.responsibleCopy, 520),
+    violationDescription: sanitizeDocumentFlowField(source.violationDescription, 2500),
+    legalGrounds: sanitizeDocumentFlowField(source.legalGrounds, 2500),
+  };
+}
+
+function sanitizeDocumentFlowField(value, maxLength = 300) {
+  return String(value || "")
+    .replace(/\r\n/g, " ")
+    .replace(/\u0000/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, Math.max(1, maxLength));
 }
 
 function writeDocumentFlowHeaderImages(doc, images) {
@@ -1972,25 +2190,21 @@ function writeDocumentFlowHeaderImages(doc, images) {
   }
 
   const maxWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-  const maxHeight = 175;
-  images.forEach((image) => {
+  const singleImageWidth = Math.min(88, Math.floor(maxWidth * 0.25));
+  images.forEach((image, index) => {
     if (!image?.buffer?.length) {
       return;
     }
 
-    const bottomLimit = doc.page.height - doc.page.margins.bottom;
-    if (doc.y + maxHeight > bottomLimit - 110) {
-      doc.addPage();
-    }
-
-    const startY = doc.y;
     try {
-      doc.image(image.buffer, doc.page.margins.left, startY, {
-        fit: [maxWidth, maxHeight],
+      const imageY = doc.y + index * 6;
+      const imageX = doc.page.margins.left + Math.max(0, (maxWidth - singleImageWidth) / 2);
+      doc.image(image.buffer, imageX, imageY, {
+        fit: [singleImageWidth, singleImageWidth],
         align: "center",
         valign: "top",
       });
-      doc.y = startY + maxHeight + 10;
+      doc.y = Math.max(doc.y, imageY + singleImageWidth + 8);
     } catch (error) {
       console.error("Document-flow image render skipped:", error?.message || error);
     }
@@ -3870,29 +4084,38 @@ function getAdmZip() {
   }
 }
 
-function getPdfFontPath() {
-  if (cachedPdfFontPath) {
-    return cachedPdfFontPath;
+function getPdfFontPaths() {
+  if (cachedPdfFontPaths) {
+    return cachedPdfFontPaths;
   }
 
-  const candidates = [];
+  const regularCandidates = [];
+  const boldCandidates = [];
   try {
-    candidates.push(require.resolve("dejavu-fonts-ttf/ttf/DejaVuSans.ttf"));
+    regularCandidates.push(require.resolve("dejavu-fonts-ttf/ttf/DejaVuSerif.ttf"));
+    boldCandidates.push(require.resolve("dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf"));
   } catch {
     // ignore and continue with fallback candidates
   }
-  candidates.push(path.join(ROOT_DIR, "fonts", "DejaVuSans.ttf"));
-  candidates.push(path.join(ROOT_DIR, "fonts", "NotoSans-Regular.ttf"));
+  regularCandidates.push(path.join(ROOT_DIR, "fonts", "DejaVuSerif.ttf"));
+  regularCandidates.push(path.join(ROOT_DIR, "fonts", "NotoSerif-Regular.ttf"));
+  regularCandidates.push(path.join(ROOT_DIR, "fonts", "DejaVuSans.ttf"));
 
-  const found = candidates.find((candidate) => candidate && fs.existsSync(candidate));
-  if (!found) {
+  boldCandidates.push(path.join(ROOT_DIR, "fonts", "DejaVuSerif-Bold.ttf"));
+  boldCandidates.push(path.join(ROOT_DIR, "fonts", "NotoSerif-Bold.ttf"));
+  boldCandidates.push(path.join(ROOT_DIR, "fonts", "DejaVuSans-Bold.ttf"));
+
+  const regular = regularCandidates.find((candidate) => candidate && fs.existsSync(candidate));
+  const bold = boldCandidates.find((candidate) => candidate && fs.existsSync(candidate)) || regular;
+
+  if (!regular) {
     throw new Error(
-      "Missing font for PDF generation. Install `dejavu-fonts-ttf` or add fonts/DejaVuSans.ttf."
+      "Missing font for PDF generation. Install `dejavu-fonts-ttf` or add a serif font in /fonts."
     );
   }
 
-  cachedPdfFontPath = found;
-  return cachedPdfFontPath;
+  cachedPdfFontPaths = { regular, bold };
+  return cachedPdfFontPaths;
 }
 
 function sendBodyParseError(res, error) {
