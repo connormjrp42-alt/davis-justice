@@ -178,7 +178,7 @@ function onDocumentFillSubmit(event) {
   if (documentPreviewCard) {
     documentPreviewCard.hidden = false;
   }
-  setDocumentFillMessage("Документ сформирован. Можно копировать текст или скачать PDF.", false, true);
+  setDocumentFillMessage("Документ сформирован. Можно копировать текст или скачать DOCX.", false, true);
 }
 
 function collectDocumentPayload() {
@@ -319,11 +319,12 @@ async function onDownloadDocumentText() {
   }
 
   try {
-    const response = await fetch("/api/document-flow/pdf", {
+    const response = await fetch("/api/document-flow/docx", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Accept: "application/pdf,application/json",
+        Accept:
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/json",
       },
       body: JSON.stringify({
         templateKind: generatedTemplateKind,
@@ -337,7 +338,7 @@ async function onDownloadDocumentText() {
       const payload = await safeJson(response);
       const details = payload?.details ? ` ${payload.details}` : "";
       const error = payload?.error || `HTTP ${response.status}`;
-      setDocumentFillMessage(`Не удалось скачать PDF: ${error}.${details}`.trim(), true);
+      setDocumentFillMessage(`Не удалось скачать DOCX: ${error}.${details}`.trim(), true);
       return;
     }
 
@@ -352,15 +353,19 @@ async function onDownloadDocumentText() {
       .replace(/[^a-zA-Z0-9_-]+/g, "-")
       .replace(/^-+|-+$/g, "");
     anchor.href = url;
-    anchor.download = `${filePrefix}-${safeNumber || "draft"}.pdf`;
+    anchor.download = `${filePrefix}-${safeNumber || "draft"}.docx`;
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
     URL.revokeObjectURL(url);
-    setDocumentFillMessage("PDF скачан. В файл включены изображения шаблона.", false, true);
+    setDocumentFillMessage(
+      "DOCX скачан строго по шаблону: форматирование и шрифт сохранены.",
+      false,
+      true
+    );
   } catch (error) {
-    console.error("PDF download error:", error);
-    setDocumentFillMessage("Ошибка сети при скачивании PDF.", true);
+    console.error("DOCX download error:", error);
+    setDocumentFillMessage("Ошибка сети при скачивании DOCX.", true);
   }
 }
 

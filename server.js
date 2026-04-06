@@ -325,6 +325,10 @@ const server = http.createServer(async (req, res) => {
       return handleDocumentFlowPdf(req, res);
     }
 
+    if (pathname === "/api/document-flow/docx" && req.method === "POST") {
+      return handleDocumentFlowDocx(req, res);
+    }
+
     if (
       documentTemplateDownloadMatch &&
       (req.method === "GET" || req.method === "HEAD")
@@ -1999,35 +2003,12 @@ async function handleConsultantAsk(req, res) {
 async function handleDocumentFlowPdf(req, res) {
   try {
     const payload = await parseJsonBody(req, MAX_JSON_BODY_BYTES);
-    const templateKind = String(payload?.templateKind || "").trim();
-    const inputFields = payload?.fields && typeof payload.fields === "object" ? payload.fields : {};
-    const fallbackDocumentText = String(payload?.documentText || "")
-      .replace(/\r\n/g, "\n")
-      .replace(/\u0000/g, "")
-      .trim();
-    const templateInfo = getDocumentFlowTemplateInfo(templateKind);
-    if (!templateInfo) {
-      return sendJson(res, 400, {
-        error: "Invalid template kind",
-        details: "Supported templates: criminal_case, appeal_acceptance.",
-      });
+    const resolved = resolveDocumentFlowRequestPayload(payload);
+    if (resolved.errorResponse) {
+      return sendJson(res, resolved.errorResponse.status, resolved.errorResponse.body);
     }
 
-    const fields = sanitizeDocumentFlowFields(inputFields);
-    const documentText =
-      buildDocumentFlowTextByTemplate(templateKind, fields) || fallbackDocumentText;
-    if (!documentText) {
-      return sendJson(res, 400, {
-        error: "Document text is required",
-        details: "Fill template fields first.",
-      });
-    }
-    if (documentText.length > 260_000) {
-      return sendJson(res, 413, {
-        error: "Document is too large",
-        details: "Reduce document size and try again.",
-      });
-    }
+    const { templateKind, templateInfo, fields, documentText } = resolved;
 
     const pdfBuffer = await buildDocumentFlowPdfBuffer(templateInfo, templateKind, fields, documentText);
     const safeNumber = sanitizeDocumentFlowFilePart(fields.docNumber || payload?.documentNumber || "draft");
@@ -2052,6 +2033,87 @@ async function handleDocumentFlowPdf(req, res) {
   }
 }
 
+async function handleDocumentFlowDocx(req, res) {
+  try {
+    const payload = await parseJsonBody(req, MAX_JSON_BODY_BYTES);
+    const resolved = resolveDocumentFlowRequestPayload(payload);
+    if (resolved.errorResponse) {
+      return sendJson(res, resolved.errorResponse.status, resolved.errorResponse.body);
+    }
+
+    const { templateKind, templateInfo, fields } = resolved;
+    const docxBuffer = generateDocumentFlowDocxBuffer(templateInfo, templateKind, fields);
+    const safeNumber = sanitizeDocumentFlowFilePart(fields.docNumber || payload?.documentNumber || "draft");
+    const filename = `${templateInfo.filePrefix}-${safeNumber || "draft"}.docx`;
+
+    res.writeHead(200, {
+      "Content-Type":
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "Content-Length": docxBuffer.length,
+      "Content-Disposition": `attachment; filename=\"${filename}\"`,
+      "Cache-Control": "no-store",
+    });
+    res.end(docxBuffer);
+  } catch (error) {
+    return sendBodyParseError(res, error);
+  }
+}
+
+function resolveDocumentFlowRequestPayload(payload) {
+  const templateKind = String(payload?.templateKind || "").trim();
+  const inputFields = payload?.fields && typeof payload.fields === "object" ? payload.fields : {};
+  const fallbackDocumentText = String(payload?.documentText || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u0000/g, "")
+    .trim();
+  const templateInfo = getDocumentFlowTemplateInfo(templateKind);
+  if (!templateInfo) {
+    return {
+      errorResponse: {
+        status: 400,
+        body: {
+          error: "Invalid template kind",
+          details: "Supported templates: criminal_case, appeal_acceptance.",
+        },
+      },
+    };
+  }
+
+  const fields = sanitizeDocumentFlowFields(inputFields);
+  const documentText =
+    buildDocumentFlowTextByTemplate(templateKind, fields) || fallbackDocumentText;
+  if (!documentText) {
+    return {
+      errorResponse: {
+        status: 400,
+        body: {
+          error: "Document text is required",
+          details: "Fill template fields first.",
+        },
+      },
+    };
+  }
+  if (documentText.length > 260_000) {
+    return {
+      errorResponse: {
+        status: 413,
+        body: {
+          error: "Document is too large",
+          details: "Reduce document size and try again.",
+        },
+      },
+    };
+  }
+
+  return {
+    errorResponse: null,
+    templateKind,
+    templateInfo,
+    fields,
+    documentText,
+  };
+}
+
 function getDocumentFlowTemplateInfo(templateKind) {
   const key = String(templateKind || "").trim();
   const defaults = DOCUMENT_FLOW_TEMPLATE_FILES[key];
@@ -2067,6 +2129,232 @@ function getDocumentFlowTemplateInfo(templateKind) {
     ...defaults,
     templatePath,
   };
+}
+
+function generateDocumentFlowDocxBuffer(templateInfo, templateKind, fields) {
+  const AdmZip = getAdmZip();
+  const templatePath = String(templateInfo?.templatePath || "");
+  if (!templatePath || !fs.existsSync(templatePath)) {
+    throw new Error("Template file not found.");
+  }
+
+  const zip = new AdmZip(templatePath);
+  const xmlEntry = zip.getEntry("word/document.xml");
+  if (!xmlEntry) {
+    throw new Error("Invalid DOCX template structure.");
+  }
+
+  const sourceXml = zip.readAsText("word/document.xml");
+  const nextXml = replaceDocumentFlowHighlightedRuns(sourceXml, templateKind, fields);
+  zip.updateFile("word/document.xml", Buffer.from(nextXml, "utf-8"));
+  return zip.toBuffer();
+}
+
+function replaceDocumentFlowHighlightedRuns(sourceXml, templateKind, fields) {
+  const replacementsByIndex = getDocumentFlowHighlightedReplacementByIndex(templateKind, fields);
+  const counters = {
+    date: 0,
+    name: 0,
+    passport: 0,
+    prosecutor: 0,
+  };
+  let highlightedIndex = 0;
+
+  return String(sourceXml || "").replace(/<w:r\b[\s\S]*?<\/w:r>/g, (runXml) => {
+    if (!/w:highlight\b/i.test(runXml)) {
+      return runXml;
+    }
+
+    highlightedIndex += 1;
+    const runText = decodeXmlEntities(getRunTextContent(runXml));
+    const indexed = replacementsByIndex[highlightedIndex];
+    const replacement =
+      indexed !== undefined
+        ? String(indexed)
+        : guessDocumentFlowPlaceholderReplacement(runText, fields, counters);
+    if (replacement === null || replacement === undefined) {
+      return runXml;
+    }
+
+    return replaceRunTextPreservingFormat(runXml, String(replacement));
+  });
+}
+
+function getDocumentFlowHighlightedReplacementByIndex(templateKind, fields) {
+  const prosecutorFull = `${fields.prosecutorRole || "Должность"} ${fields.prosecutorName || "Имя Фамилия"}`.trim();
+  const applicantName = fields.applicantName || "Имя Фамилия";
+  const applicantPassport = fields.applicantPassport || "0000";
+  const officerName = fields.officerName || "Имя Фамилия";
+  const officerPassport = fields.officerPassport || "0000";
+  const unitName = fields.unitName || "Подразделение";
+  const responsibleCopy = fields.responsibleCopy || "уполномоченное должностное лицо";
+  const decisionDate = fields.decisionDate || "00.00.2026";
+  const appealDate = fields.appealDate || "00.00.2026";
+  const caseIdentifier = fields.caseIdentifier || "[DJR/DGA]";
+
+  if (templateKind === "appeal_acceptance") {
+    return {
+      1: fields.docNumber || "000",
+      2: prosecutorFull,
+      3: applicantName,
+      4: applicantPassport,
+      5: appealDate,
+      6: applicantName,
+      7: applicantPassport,
+      8: unitName,
+      9: "",
+      10: "",
+      11: officerName,
+      12: officerPassport,
+      14: fields.violationDescription || "описать в чем выразились",
+      17: fields.legalGrounds || "основания",
+      19: applicantName,
+      20: prosecutorFull,
+      21: `${unitName} ${officerName}`.trim(),
+      22: officerPassport,
+      23: prosecutorFull,
+      24: decisionDate,
+      25: "Подпись",
+    };
+  }
+
+  return {
+    1: fields.docNumber || "000",
+    2: prosecutorFull,
+    3: applicantName,
+    4: applicantPassport,
+    5: appealDate,
+    6: applicantName,
+    7: applicantPassport,
+    8: unitName,
+    9: "",
+    10: "",
+    11: officerName,
+    12: officerPassport,
+    14: fields.violationDescription || "описать в чем выразились",
+    17: fields.legalGrounds || "основания",
+    19: officerName,
+    20: officerPassport,
+    21: officerName,
+    22: officerPassport,
+    24: caseIdentifier,
+    25: responsibleCopy,
+    26: "",
+    27: "",
+    28: "",
+    29: "",
+    30: "",
+    31: "",
+    32: "",
+    33: "",
+    34: "",
+    35: "",
+    36: "",
+    37: "",
+    38: "",
+    39: "",
+    40: "",
+    41: prosecutorFull,
+    42: decisionDate,
+    43: "Подпись",
+  };
+}
+
+function guessDocumentFlowPlaceholderReplacement(runText, fields, counters) {
+  const text = String(runText || "").trim();
+  if (!text) return "";
+
+  const prosecutorFull = `${fields.prosecutorRole || "Должность"} ${fields.prosecutorName || "Имя Фамилия"}`.trim();
+  const applicantName = fields.applicantName || "Имя Фамилия";
+  const officerName = fields.officerName || "Имя Фамилия";
+  const applicantPassport = fields.applicantPassport || "0000";
+  const officerPassport = fields.officerPassport || "0000";
+
+  if (text === "000") {
+    return fields.docNumber || "000";
+  }
+  if (text === "00.00.2026") {
+    counters.date += 1;
+    return counters.date === 1
+      ? fields.appealDate || "00.00.2026"
+      : fields.decisionDate || "00.00.2026";
+  }
+  if (text === "Должность Имя Фамилия") {
+    counters.prosecutor += 1;
+    return prosecutorFull;
+  }
+  if (text === "Имя Фамилия") {
+    counters.name += 1;
+    return counters.name <= 2 ? applicantName : officerName;
+  }
+  if (text === "0000") {
+    counters.passport += 1;
+    return counters.passport <= 2 ? applicantPassport : officerPassport;
+  }
+  if (text === "описать в чем выразились") {
+    return fields.violationDescription || text;
+  }
+  if (text === "основания") {
+    return fields.legalGrounds || text;
+  }
+  if (text === "[DJR/DGA]") {
+    return fields.caseIdentifier || text;
+  }
+  if (/^los santos police department/i.test(text)) {
+    return fields.unitName || text;
+  }
+  if (text === "Подпись") {
+    return "Подпись";
+  }
+  return null;
+}
+
+function getRunTextContent(runXml) {
+  return [...String(runXml || "").matchAll(/<w:t(?:\s+[^>]*)?>([\s\S]*?)<\/w:t>/g)]
+    .map((match) => match[1])
+    .join("");
+}
+
+function replaceRunTextPreservingFormat(runXml, textValue) {
+  const firstTextMatch = String(runXml || "").match(/<w:t(\s+[^>]*)?>[\s\S]*?<\/w:t>/);
+  if (!firstTextMatch) {
+    return runXml;
+  }
+
+  const attrsMatch = firstTextMatch[0].match(/^<w:t(\s+[^>]*)?>/);
+  let attrs = attrsMatch?.[1] || "";
+  const needsPreserve = /^\s|\s$/.test(textValue);
+  if (needsPreserve && !/xml:space=/.test(attrs)) {
+    attrs = `${attrs} xml:space=\"preserve\"`;
+  }
+
+  const replacementText = `<w:t${attrs}>${escapeXmlText(textValue)}</w:t>`;
+  let inserted = false;
+  return String(runXml || "").replace(/<w:t(?:\s+[^>]*)?>[\s\S]*?<\/w:t>/g, () => {
+    if (inserted) {
+      return "";
+    }
+    inserted = true;
+    return replacementText;
+  });
+}
+
+function escapeXmlText(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function decodeXmlEntities(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
 }
 
 function getDocumentFlowTemplatesFromSettings(settings = siteSettings) {
